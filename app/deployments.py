@@ -4,7 +4,7 @@ from flask import Blueprint, abort, flash, redirect, render_template, request, u
 from flask_login import current_user, login_required
 
 from .extensions import db
-from .models import Block, Deployment, House, HouseAssignment, HouseVisit, Locality, ReinspectionTask, User, Worker
+from .models import Block, Deployment, House, HouseAssignment, HouseVisit, Locality, ReinspectionTask, Worker
 from .security import validate_csrf
 from .services.audit import log_change
 from .services.permissions import require_management_access
@@ -23,10 +23,19 @@ def deployment_status(deployment: Deployment) -> str:
 
 
 def can_access_deployment(deployment: Deployment) -> bool:
-    return current_user.role in {"admin", "dc", "adc", "district_officer", "block_officer", "supervisor"} or (
-        deployment.account_user_id == current_user.id
-        or (current_user.worker is not None and deployment.worker_id == current_user.worker.id)
-    )
+    if current_user.role in {"admin", "dc", "adc", "district_officer", "block_officer", "supervisor"}:
+        return True
+    if current_user.worker is not None and deployment.worker_id == current_user.worker.id:
+        return True
+    return deployment.worker_id is None and deployment.account_user_id == current_user.id
+
+
+def current_user_deployment_filter():
+    """Use permanent-worker ownership, retaining a narrow legacy fallback."""
+    worker_id = current_user.worker.id if current_user.worker is not None else -1
+    return ((Deployment.worker_id == worker_id) | (
+        Deployment.worker_id.is_(None) & (Deployment.account_user_id == current_user.id)
+    ))
 
 
 @deployments_bp.get("/")
@@ -47,32 +56,29 @@ def create_deployment():
     require_management_access()
     if request.method == "POST":
         validate_csrf()
-        worker = db.session.get(Worker, optional_int(request.form.get("worker_id")))
-        block = db.session.get(Block, optional_int(request.form.get("block_id")))
+        worker_id = optional_int(request.form.get("worker_id"))
+        worker = db.session.get(Worker, worker_id) if worker_id else None
+        block_id = optional_int(request.form.get("block_id"))
+        block = db.session.get(Block, block_id) if block_id else None
         locality_id = request.form.get("locality_id", "").strip()
         locality = db.session.get(Locality, optional_int(locality_id)) if locality_id else None
         scheduled_date = parse_date(request.form.get("deployment_date"))
-        account_user_id = optional_int(request.form.get("account_user_id"))
-        account_user = db.session.get(User, account_user_id) if account_user_id else None
-        worker_name = request.form.get("worker_name", "").strip() or (worker.full_name if worker else "")
-        worker_code = request.form.get("worker_code", "").strip() or (worker.official_worker_id if worker else None)
-        if not worker_name or not block or not scheduled_date:
-            flash("Date, worker name, and block are required.", "error")
+        if not worker or not worker.is_active or not block or not scheduled_date:
+            flash("Date, an active permanent worker, and block are required.", "error")
         elif locality and locality.block_id != block.id:
             flash("The locality does not belong to the selected block.", "error")
-        elif account_user_id and not account_user:
-            flash("Select a valid login account.", "error")
         else:
             deployment = Deployment(
                 worker=worker,
-                account_user=account_user,
-                worker_name=worker_name,
-                worker_code=worker_code,
-                worker_contact=request.form.get("worker_contact", "").strip() or (worker.phone_number if worker else None),
-                worker_designation=request.form.get("worker_designation", "").strip() or (worker.designation if worker else None),
+                account_user=worker.user,
+                worker_name=worker.full_name,
+                worker_code=worker.official_worker_id,
+                worker_contact=worker.phone_number,
+                worker_designation=worker.designation,
                 block=block,
                 locality=locality,
-                supervisor_name=request.form.get("supervisor_name", "").strip() or None,
+                supervisor=worker.supervisor,
+                supervisor_name=worker.supervisor.full_name if worker.supervisor else None,
                 deployment_date=scheduled_date,
                 team_name=request.form.get("team_name", "").strip() or None,
                 priority=request.form.get("priority", "normal"),
@@ -81,11 +87,11 @@ def create_deployment():
             )
             db.session.add(deployment)
             db.session.flush()
-            log_change("create", "deployment", deployment.id, after={"date": str(scheduled_date), "worker_name": worker_name, "block_id": block.id})
+            log_change("create", "deployment", deployment.id, after={"date": str(scheduled_date), "worker_id": worker.id, "block_id": block.id})
             db.session.commit()
             flash("Deployment created. Add known houses only when authoritative house data is available.", "success")
             return redirect(url_for("deployments.detail", deployment_id=deployment.id))
-    return render_template("deployments/form.html", workers=active_workers(), accounts=User.query.filter_by(is_active=True).order_by(User.username).all(), blocks=Block.query.order_by(Block.name).all(), localities=Locality.query.order_by(Locality.name).all(), today=date.today())
+    return render_template("deployments/form.html", workers=active_workers(), blocks=Block.query.order_by(Block.name).all(), localities=Locality.query.order_by(Locality.name).all(), today=date.today())
 
 
 @deployments_bp.get("/<int:deployment_id>")
@@ -175,13 +181,13 @@ def reassign_assignment(assignment_id: int):
 @login_required
 def mobile():
     deployments = Deployment.query.filter(Deployment.deployment_date == date.today()).filter(
-        (Deployment.account_user_id == current_user.id) | (Deployment.worker_id == (current_user.worker.id if current_user.worker else -1)),
+        current_user_deployment_filter(),
         Deployment.status.notin_(["cancelled", "completed"])
     ).all()
     priority_rechecks = 0
     if deployments:
         priority_rechecks = ReinspectionTask.query.join(House).join(HouseAssignment).join(Deployment).filter(
-            (Deployment.account_user_id == current_user.id) | (Deployment.worker_id == (current_user.worker.id if current_user.worker else -1)),
+            current_user_deployment_filter(),
             Deployment.deployment_date == date.today(),
             ReinspectionTask.status == "open",
         ).distinct().count()
@@ -195,7 +201,7 @@ def mobile_house_search():
     houses = []
     if query:
         houses = House.query.join(HouseAssignment).join(Deployment).filter(
-            (Deployment.account_user_id == current_user.id) | (Deployment.worker_id == (current_user.worker.id if current_user.worker else -1)),
+            current_user_deployment_filter(),
             House.address.ilike(f"%{query}%"),
         ).distinct().all()
     return render_template("deployments/mobile_house_search.html", houses=houses, query=query)
@@ -205,7 +211,7 @@ def mobile_house_search():
 @login_required
 def mobile_visits():
     visits = HouseVisit.query.join(Deployment, HouseVisit.deployment_id == Deployment.id).filter(
-        (Deployment.account_user_id == current_user.id) | (Deployment.worker_id == (current_user.worker.id if current_user.worker else -1))
+        current_user_deployment_filter()
     ).order_by(HouseVisit.visited_at.desc()).limit(50).all()
     return render_template("deployments/mobile_visits.html", visits=visits)
 

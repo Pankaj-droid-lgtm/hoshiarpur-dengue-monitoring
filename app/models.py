@@ -162,6 +162,7 @@ class Deployment(TimestampMixin, db.Model):
     supervisor: Mapped[Worker | None] = relationship(foreign_keys=[supervisor_id])
     account_user: Mapped[User | None] = relationship(foreign_keys=[account_user_id])
     house_assignments: Mapped[list[HouseAssignment]] = relationship(back_populates="deployment")
+    visits: Mapped[list[HouseVisit]] = relationship(back_populates="deployment")
 
 
 class HouseAssignment(TimestampMixin, db.Model):
@@ -199,6 +200,7 @@ class HouseVisit(TimestampMixin, db.Model):
 
     house: Mapped[House] = relationship(back_populates="visits")
     worker: Mapped[Worker | None] = relationship(back_populates="visits")
+    deployment: Mapped[Deployment] = relationship(back_populates="visits")
     assignment: Mapped[HouseAssignment | None] = relationship(back_populates="visits")
     larval_observations: Mapped[list[LarvalObservation]] = relationship(back_populates="visit")
     photos: Mapped[list[Photo]] = relationship(back_populates="visit")

@@ -23,6 +23,8 @@ def create_app(config_object=Config) -> Flask:
     app = Flask(__name__, instance_relative_config=True)
     app.config.from_object(config_object)
     Path(app.instance_path).mkdir(parents=True, exist_ok=True)
+    if app.config["UPLOAD_DIRECTORY"] is None:
+        app.config["UPLOAD_DIRECTORY"] = str(Path(app.instance_path) / "uploads")
 
     if not app.config["SECRET_KEY"]:
         raise RuntimeError("DENGUE_SECRET_KEY must be configured before the application can start.")

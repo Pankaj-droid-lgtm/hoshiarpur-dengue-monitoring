@@ -50,6 +50,7 @@ def inspect_house(assignment_id: int):
         capture_gps(visit)
         save_photo(visit)
         assignment.completed_at = visit.visited_at
+        update_deployment_completion(assignment.deployment, visit.visited_at)
         if positives:
             task = ReinspectionTask(house_id=assignment.house_id, origin_visit=visit, due_date=(visit.visited_at + timedelta(days=7)).date(), reason="Larval-positive house inspection")
             db.session.add(task)
@@ -66,6 +67,8 @@ def photo_file(photo_id: int):
     photo = db.get_or_404(Photo, photo_id)
     if not can_access_deployment(photo.visit.deployment):
         abort(403)
+    if Path(photo.storage_key).name != photo.storage_key:
+        abort(404)
     return send_from_directory(upload_directory(), photo.storage_key)
 
 
@@ -76,12 +79,28 @@ def capture_gps(visit: HouseVisit) -> None:
         db.session.add(GpsCapture(visit=visit, latitude=latitude, longitude=longitude, accuracy_metres=optional_float(request.form.get("gps_accuracy")), captured_at=datetime.utcnow()))
 
 
+def update_deployment_completion(deployment, completed_at: datetime) -> None:
+    """Update progress from completed assignments without altering cancelled work."""
+    assignments = deployment.house_assignments
+    if not assignments or deployment.status == "cancelled":
+        return
+    if all(assignment.completed_at is not None for assignment in assignments):
+        deployment.status = "completed"
+        deployment.completed_at = completed_at
+    elif deployment.status in {"assigned", "started"}:
+        deployment.status = "in_progress"
+
+
 def save_photo(visit: HouseVisit) -> None:
     upload = request.files.get("photo")
     if not upload or not upload.filename:
         return
     extension = Path(secure_filename(upload.filename)).suffix.lower()
-    if upload.mimetype not in ALLOWED_PHOTO_TYPES or extension not in ALLOWED_EXTENSIONS:
+    if (
+        upload.mimetype not in ALLOWED_PHOTO_TYPES
+        or extension not in ALLOWED_EXTENSIONS
+        or not matches_image_signature(upload, extension)
+    ):
         abort(400)
     filename = f"{uuid4().hex}{extension}"
     upload_directory().mkdir(parents=True, exist_ok=True)
@@ -90,7 +109,15 @@ def save_photo(visit: HouseVisit) -> None:
 
 
 def upload_directory() -> Path:
-    return Path(current_app.instance_path) / "uploads"
+    return Path(current_app.config["UPLOAD_DIRECTORY"]).resolve()
+
+
+def matches_image_signature(upload, extension: str) -> bool:
+    signature = upload.stream.read(16)
+    upload.stream.seek(0)
+    if extension == ".png":
+        return signature.startswith(b"\x89PNG\r\n\x1a\n")
+    return signature.startswith(b"\xff\xd8\xff")
 
 
 def number(value: str | None) -> int:
