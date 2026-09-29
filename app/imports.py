@@ -10,7 +10,7 @@ from .extensions import db
 from .models import HistoricalBlockReport, HistoricalDengueCase, HistoricalFieldResponse, HistoricalStaffingAllocation, SourceDocument
 from .security import validate_csrf
 from .services.audit import log_change
-from .services.permissions import require_management_access
+from .services.permissions import require_operational_management_access
 
 
 imports_bp = Blueprint("imports", __name__, url_prefix="/imports")
@@ -19,7 +19,7 @@ imports_bp = Blueprint("imports", __name__, url_prefix="/imports")
 @imports_bp.route("/historical", methods=["GET", "POST"])
 @login_required
 def historical_import():
-    require_management_access()
+    require_operational_management_access()
     if request.method == "POST":
         validate_csrf()
         upload = request.files.get("source_file")

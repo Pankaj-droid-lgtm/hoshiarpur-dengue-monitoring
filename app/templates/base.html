@@ -19,12 +19,12 @@
           <a href="{{ url_for('deployments.mobile') }}">My field work</a>
         {% else %}
           <a href="{{ url_for('main.dashboard') }}">Dashboard</a>
-          <a href="{{ url_for('workers.worker_list') }}">Workers</a>
-          <a href="{{ url_for('geography.index') }}">Geography</a>
-          <a href="{{ url_for('deployments.dashboard') }}">Deployments</a>
+          {% if current_user.role != 'adc' %}<a href="{{ url_for('workers.worker_list') }}">Workers</a>
+          <a href="{{ url_for('geography.index') }}">Geography</a>{% endif %}
+          <a href="{{ url_for('deployments.dashboard') }}">{{ 'Deployment progress' if current_user.role == 'adc' else 'Deployments' }}</a>
           <a href="{{ url_for('monitoring.dashboard') }}">Monitoring</a>
           <a href="{{ url_for('monitoring.map_view') }}">Map</a>
-          <a href="{{ url_for('imports.historical_import') }}">Historical import</a>
+          {% if current_user.role != 'adc' %}<a href="{{ url_for('imports.historical_import') }}">Historical import</a>{% endif %}
         {% endif %}
         <form method="post" action="{{ url_for('auth.logout') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

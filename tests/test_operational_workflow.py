@@ -1,0 +1,109 @@
+import os
+import tempfile
+import unittest
+from datetime import date
+
+from sqlalchemy.exc import IntegrityError
+from werkzeug.security import generate_password_hash
+
+from app import create_app
+from app.extensions import db
+from app.models import Block, Deployment, House, HouseAssignment, Locality, User, Worker
+
+
+class TestConfig:
+    SECRET_KEY = "test-secret"
+    SQLALCHEMY_DATABASE_URI = "sqlite://"
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+    UPLOAD_DIRECTORY = tempfile.mkdtemp(prefix="dengue-test-uploads-")
+    TESTING = True
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SAMESITE = "Lax"
+    SESSION_COOKIE_SECURE = False
+
+
+class OperationalWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.app = create_app(TestConfig)
+        self.client = self.app.test_client()
+        with self.app.app_context():
+            db.create_all()
+            admin = User(username="admin-test", password_hash=generate_password_hash("Admin-password-123"), role="admin")
+            adc = User(username="adc-test", password_hash=generate_password_hash("Adc-password-12345"), role="adc")
+            first_account = User(username="W001", password_hash=generate_password_hash("Worker-password-123"), role="field_worker")
+            second_account = User(username="W002", password_hash=generate_password_hash("Worker-password-234"), role="field_worker")
+            first_worker = Worker(official_worker_id="W001", full_name="Test Worker One", designation="Field Worker", user=first_account)
+            second_worker = Worker(official_worker_id="W002", full_name="Test Worker Two", designation="Field Worker", user=second_account)
+            block = Block(name="Test Block")
+            db.session.add_all([admin, adc, first_worker, second_worker, block])
+            db.session.flush()
+            locality = Locality(block=block, name="Test Locality")
+            house = House(locality=locality, house_code="HOS-TEST-001", address="Test house")
+            db.session.add_all([locality, house])
+            db.session.commit()
+            self.ids = {"first_worker": first_worker.id, "second_worker": second_worker.id, "block": block.id, "locality": locality.id, "house": house.id}
+
+    def tearDown(self):
+        with self.app.app_context():
+            db.drop_all()
+
+    def post(self, path, data=None, **kwargs):
+        with self.client.session_transaction() as session:
+            session["_csrf_token"] = "test-csrf"
+        return self.client.post(path, data={"csrf_token": "test-csrf", **(data or {})}, **kwargs)
+
+    def login(self, username, password):
+        return self.post("/auth/login", {"username": username, "password": password})
+
+    def create_deployment(self, worker_id):
+        response = self.post("/deployments/new", {"deployment_date": date.today().isoformat(), "worker_id": str(worker_id), "block_id": str(self.ids["block"]), "locality_id": str(self.ids["locality"])})
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            return Deployment.query.order_by(Deployment.id.desc()).first().id
+
+    def test_unique_worker_and_house_identifiers(self):
+        with self.app.app_context():
+            db.session.add(Worker(official_worker_id="W001", full_name="Duplicate", designation="Field Worker"))
+            with self.assertRaises(IntegrityError):
+                db.session.commit()
+            db.session.rollback()
+            db.session.add(House(locality_id=self.ids["locality"], house_code="HOS-TEST-001", address="Duplicate house"))
+            with self.assertRaises(IntegrityError):
+                db.session.commit()
+            db.session.rollback()
+
+    def test_assignment_isolation_reassignment_and_completion(self):
+        self.assertEqual(self.login("admin-test", "Admin-password-123").status_code, 302)
+        first_deployment = self.create_deployment(self.ids["first_worker"])
+        second_deployment = self.create_deployment(self.ids["second_worker"])
+        self.assertEqual(self.post(f"/deployments/{first_deployment}/assignments", {"house_id": str(self.ids["house"])}).status_code, 302)
+        self.assertIn(b"active assignment for this date", self.post(f"/deployments/{second_deployment}/assignments", {"house_id": str(self.ids["house"])}, follow_redirects=True).data)
+        with self.app.app_context():
+            assignment = HouseAssignment.query.filter_by(deployment_id=first_deployment).one()
+            assignment_id = assignment.id
+        self.post("/auth/logout")
+        self.assertEqual(self.login("W002", "Worker-password-234").status_code, 302)
+        self.assertEqual(self.client.get(f"/deployments/{first_deployment}").status_code, 403)
+        self.assertEqual(self.client.get(f"/visits/assignments/{assignment_id}").status_code, 403)
+        self.post("/auth/logout")
+        self.assertEqual(self.login("admin-test", "Admin-password-123").status_code, 302)
+        self.assertEqual(self.post(f"/deployments/assignments/{assignment_id}/reassign", {"destination_deployment_id": str(second_deployment)}).status_code, 302)
+        with self.app.app_context():
+            self.assertEqual(db.session.get(HouseAssignment, assignment_id).deployment_id, second_deployment)
+        self.post("/auth/logout")
+        self.assertEqual(self.login("W001", "Worker-password-123").status_code, 302)
+        self.assertEqual(self.client.get(f"/visits/assignments/{assignment_id}").status_code, 403)
+        self.post("/auth/logout")
+        self.assertEqual(self.login("W002", "Worker-password-234").status_code, 302)
+        self.assertEqual(self.post(f"/visits/assignments/{assignment_id}", {"visit_outcome": "completed", "containers_checked": "1", "positive_containers": "0"}).status_code, 302)
+        with self.app.app_context():
+            self.assertEqual(db.session.get(Deployment, second_deployment).status, "completed")
+        self.post("/auth/logout")
+        self.assertEqual(self.login("adc-test", "Adc-password-12345").status_code, 302)
+        self.assertEqual(self.client.get("/monitoring/").status_code, 200)
+        self.assertEqual(self.post("/deployments/new", {}).status_code, 403)
+        self.assertEqual(self.post(f"/deployments/{first_deployment}/assignments", {"house_id": str(self.ids["house"])}).status_code, 403)
+
+
+if __name__ == "__main__":
+    unittest.main()

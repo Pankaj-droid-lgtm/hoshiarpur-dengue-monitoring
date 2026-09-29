@@ -8,7 +8,7 @@ from .extensions import db
 from .models import Role, User, Worker
 from .security import validate_csrf
 from .services.audit import log_change
-from .services.permissions import can_access_worker, require_management_access
+from .services.permissions import can_access_worker, require_operational_management_access
 
 
 workers_bp = Blueprint("workers", __name__, url_prefix="/workers")
@@ -22,7 +22,7 @@ def selected_supervisor_id() -> int | None:
 @workers_bp.get("/")
 @login_required
 def worker_list():
-    require_management_access()
+    require_operational_management_access()
     query = request.args.get("q", "").strip()
     active_filter = request.args.get("active", "active")
     workers = Worker.query
@@ -44,7 +44,7 @@ def worker_list():
 @workers_bp.route("/new", methods=["GET", "POST"])
 @login_required
 def create_worker():
-    require_management_access()
+    require_operational_management_access()
     if request.method == "POST":
         validate_csrf()
         worker_id = request.form.get("official_worker_id", "").strip()
@@ -76,7 +76,7 @@ def create_worker():
 @workers_bp.route("/<int:worker_id>/edit", methods=["GET", "POST"])
 @login_required
 def edit_worker(worker_id: int):
-    require_management_access()
+    require_operational_management_access()
     worker = db.get_or_404(Worker, worker_id)
     if request.method == "POST":
         validate_csrf()
@@ -109,7 +109,7 @@ def worker_detail(worker_id: int):
 @workers_bp.post("/<int:worker_id>/deactivate")
 @login_required
 def deactivate_worker(worker_id: int):
-    require_management_access()
+    require_operational_management_access()
     validate_csrf()
     worker = db.get_or_404(Worker, worker_id)
     worker.is_active = False
@@ -125,7 +125,7 @@ def deactivate_worker(worker_id: int):
 @workers_bp.route("/<int:worker_id>/account", methods=["GET", "POST"])
 @login_required
 def set_account(worker_id: int):
-    require_management_access()
+    require_operational_management_access()
     worker = db.get_or_404(Worker, worker_id)
     if request.method == "POST":
         validate_csrf()

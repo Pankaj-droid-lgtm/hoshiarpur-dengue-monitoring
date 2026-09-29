@@ -7,7 +7,11 @@ from .extensions import db
 from .models import Block, Deployment, House, HouseAssignment, HouseVisit, Locality, ReinspectionTask, Worker
 from .security import validate_csrf
 from .services.audit import log_change
-from .services.permissions import require_management_access
+from .services.permissions import (
+    has_operational_management_access,
+    require_management_access,
+    require_operational_management_access,
+)
 
 
 deployments_bp = Blueprint("deployments", __name__, url_prefix="/deployments")
@@ -53,7 +57,7 @@ def dashboard():
 @deployments_bp.route("/new", methods=["GET", "POST"])
 @login_required
 def create_deployment():
-    require_management_access()
+    require_operational_management_access()
     if request.method == "POST":
         validate_csrf()
         worker_id = optional_int(request.form.get("worker_id"))
@@ -102,7 +106,7 @@ def detail(deployment_id: int):
         abort(403)
     assignments = HouseAssignment.query.filter_by(deployment_id=deployment.id).order_by(HouseAssignment.id).all()
     destinations = []
-    if current_user.role in {"admin", "dc", "adc", "district_officer", "block_officer", "supervisor"}:
+    if has_operational_management_access():
         destinations = Deployment.query.filter(
             Deployment.deployment_date == deployment.deployment_date,
             Deployment.id != deployment.id,
@@ -110,8 +114,9 @@ def detail(deployment_id: int):
         ).order_by(Deployment.id).all()
     return render_template(
         "deployments/detail.html", deployment=deployment, assignments=assignments,
-        available_houses=available_houses(deployment), destinations=destinations,
-        deployment_status=deployment_status
+        available_houses=available_houses(deployment, request.args.get("house_q", "").strip()),
+        destinations=destinations, deployment_status=deployment_status,
+        house_query=request.args.get("house_q", "").strip(), can_manage=has_operational_management_access(),
     )
 
 
@@ -121,6 +126,8 @@ def start_deployment(deployment_id: int):
     validate_csrf()
     deployment = db.get_or_404(Deployment, deployment_id)
     if not can_access_deployment(deployment):
+        abort(403)
+    if current_user.role != "field_worker" and not has_operational_management_access():
         abort(403)
     if deployment.status == "assigned":
         deployment.status = "started"
@@ -133,16 +140,20 @@ def start_deployment(deployment_id: int):
 @deployments_bp.post("/<int:deployment_id>/assignments")
 @login_required
 def add_assignment(deployment_id: int):
-    require_management_access()
+    require_operational_management_access()
     validate_csrf()
     deployment = db.get_or_404(Deployment, deployment_id)
     house = db.session.get(House, optional_int(request.form.get("house_id")))
-    if not house:
+    if deployment.status in {"completed", "cancelled"}:
+        flash("Houses cannot be assigned to a completed or cancelled deployment.", "error")
+    elif not house:
         flash("Select a valid operational house.", "error")
     elif deployment.locality_id and house.locality_id != deployment.locality_id:
         flash("The house does not belong to the deployment locality.", "error")
     elif HouseAssignment.query.filter_by(deployment_id=deployment.id, house_id=house.id).first():
         flash("That house is already assigned to this deployment.", "error")
+    elif active_assignment_for_date(house.id, deployment.deployment_date, deployment.id):
+        flash("That house already has an active assignment for this date.", "error")
     else:
         assignment = HouseAssignment(deployment=deployment, house=house, priority=request.form.get("priority", deployment.priority))
         db.session.add(assignment)
@@ -156,7 +167,7 @@ def add_assignment(deployment_id: int):
 @deployments_bp.post("/assignments/<int:assignment_id>/reassign")
 @login_required
 def reassign_assignment(assignment_id: int):
-    require_management_access()
+    require_operational_management_access()
     validate_csrf()
     assignment = db.get_or_404(HouseAssignment, assignment_id)
     destination = db.session.get(Deployment, optional_int(request.form.get("destination_deployment_id")))
@@ -177,12 +188,39 @@ def reassign_assignment(assignment_id: int):
     return redirect(url_for("deployments.detail", deployment_id=assignment.deployment_id))
 
 
+@deployments_bp.post("/<int:deployment_id>/manage")
+@login_required
+def manage_deployment(deployment_id: int):
+    """Update only safe operational metadata without changing historical links."""
+    require_operational_management_access()
+    validate_csrf()
+    deployment = db.get_or_404(Deployment, deployment_id)
+    before = {"team_name": deployment.team_name, "priority": deployment.priority, "status": deployment.status}
+    requested_status = request.form.get("status", deployment.status)
+    if requested_status not in DEPLOYMENT_STATUSES or requested_status == "completed":
+        flash("Completed status is set only when all assigned houses are completed.", "error")
+    elif deployment.status == "completed":
+        flash("Completed deployments cannot be changed.", "error")
+    else:
+        deployment.team_name = request.form.get("team_name", "").strip() or None
+        deployment.priority = request.form.get("priority", deployment.priority)
+        deployment.notes = request.form.get("notes", "").strip() or None
+        deployment.status = requested_status
+        if requested_status == "started" and deployment.started_at is None:
+            deployment.started_at = datetime.utcnow()
+        log_change("update", "deployment", deployment.id, before=before, after={"team_name": deployment.team_name, "priority": deployment.priority, "status": deployment.status})
+        db.session.commit()
+        flash("Deployment details updated.", "success")
+    return redirect(url_for("deployments.detail", deployment_id=deployment.id))
+
+
 @deployments_bp.get("/mobile")
 @login_required
 def mobile():
-    deployments = Deployment.query.filter(Deployment.deployment_date == date.today()).filter(
+    deployments = Deployment.query.filter(
+        Deployment.deployment_date == date.today(),
         current_user_deployment_filter(),
-        Deployment.status.notin_(["cancelled", "completed"])
+        Deployment.status != "cancelled",
     ).all()
     priority_rechecks = 0
     if deployments:
@@ -220,11 +258,35 @@ def active_workers() -> list[Worker]:
     return Worker.query.filter_by(is_active=True).order_by(Worker.full_name).all()
 
 
-def available_houses(deployment: Deployment) -> list[House]:
-    query = House.query.filter_by(is_active=True)
+def available_houses(deployment: Deployment, search: str) -> list[House]:
+    """Return a small, deployment-compatible house selection result."""
+    query = House.query.join(Locality).filter(House.is_active.is_(True))
     if deployment.locality_id:
-        query = query.filter_by(locality_id=deployment.locality_id)
-    return query.order_by(House.house_code).all()
+        query = query.filter(House.locality_id == deployment.locality_id)
+    else:
+        query = query.filter(Locality.block_id == deployment.block_id)
+    query = query.filter(~House.assignments.any(HouseAssignment.deployment_id == deployment.id))
+    query = query.filter(~House.assignments.any(
+        HouseAssignment.deployment.has(
+            (Deployment.deployment_date == deployment.deployment_date)
+            & (Deployment.status != "cancelled")
+        )
+    ))
+    if not search:
+        return []
+    pattern = f"%{search}%"
+    return query.filter((House.house_code.ilike(pattern)) | (House.address.ilike(pattern))).order_by(House.house_code).limit(100).all()
+
+
+def active_assignment_for_date(house_id: int, deployment_date: date, exclude_deployment_id: int | None = None) -> bool:
+    query = HouseAssignment.query.join(Deployment).filter(
+        HouseAssignment.house_id == house_id,
+        Deployment.deployment_date == deployment_date,
+        Deployment.status != "cancelled",
+    )
+    if exclude_deployment_id is not None:
+        query = query.filter(HouseAssignment.deployment_id != exclude_deployment_id)
+    return db.session.query(query.exists()).scalar()
 
 
 def parse_date(value: str | None) -> date | None:

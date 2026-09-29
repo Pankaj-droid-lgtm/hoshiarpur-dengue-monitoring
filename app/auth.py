@@ -4,7 +4,7 @@ from flask import Blueprint, abort, flash, redirect, render_template, request, u
 from flask_login import current_user, login_required, login_user, logout_user
 from werkzeug.security import check_password_hash
 
-from .extensions import login_manager
+from .extensions import db, login_manager
 from .models import User
 from .security import validate_csrf
 from .services.audit import log_change
@@ -15,7 +15,7 @@ auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 
 @login_manager.user_loader
 def load_user(user_id: str) -> User | None:
-    return User.query.get(int(user_id))
+    return db.session.get(User, int(user_id))
 
 
 def roles_required(*roles: str):

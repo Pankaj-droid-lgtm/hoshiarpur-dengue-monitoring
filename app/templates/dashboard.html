@@ -2,12 +2,15 @@
 {% block content %}
 <section class="panel">
   <h2>Welcome, {{ current_user.username }}</h2>
-  {% if is_manager %}
+  {% if is_manager and current_user.role != 'adc' %}
     <p>Worker management and daily deployment are ready for authorized operational data.</p>
     <div class="action-row">
       <a class="button" href="{{ url_for('workers.worker_list') }}">Manage workers</a>
       <a class="button secondary" href="{{ url_for('deployments.dashboard') }}">View deployments</a>
     </div>
+  {% elif current_user.role == 'adc' %}
+    <p>District-wide monitoring, reports, and the map are available from the monitoring menu.</p>
+    <div class="action-row"><a class="button secondary" href="{{ url_for('monitoring.dashboard') }}">Open monitoring dashboard</a></div>
   {% else %}
     <p>Your field work is available from the mobile view.</p>
   {% endif %}

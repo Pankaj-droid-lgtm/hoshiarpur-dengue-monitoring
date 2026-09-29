@@ -5,7 +5,7 @@ from .extensions import db
 from .models import Block, GeographyAlias, House, Locality
 from .security import validate_csrf
 from .services.audit import log_change
-from .services.permissions import require_management_access
+from .services.permissions import require_operational_management_access
 
 
 geography_bp = Blueprint("geography", __name__, url_prefix="/geography")
@@ -14,14 +14,14 @@ geography_bp = Blueprint("geography", __name__, url_prefix="/geography")
 @geography_bp.get("/")
 @login_required
 def index():
-    require_management_access()
+    require_operational_management_access()
     return render_template("geography/index.html", blocks=Block.query.order_by(Block.name).all(), aliases=GeographyAlias.query.order_by(GeographyAlias.review_status, GeographyAlias.source_name).all())
 
 
 @geography_bp.post("/blocks")
 @login_required
 def add_block():
-    require_management_access()
+    require_operational_management_access()
     validate_csrf()
     name = request.form.get("name", "").strip()
     if not name or Block.query.filter_by(name=name).first():
@@ -39,7 +39,7 @@ def add_block():
 @geography_bp.post("/localities")
 @login_required
 def add_locality():
-    require_management_access()
+    require_operational_management_access()
     validate_csrf()
     block_id = request.form.get("block_id", type=int)
     name = request.form.get("name", "").strip()
@@ -58,7 +58,7 @@ def add_locality():
 @geography_bp.post("/aliases")
 @login_required
 def add_alias():
-    require_management_access()
+    require_operational_management_access()
     validate_csrf()
     source_name = request.form.get("source_name", "").strip()
     if not source_name:
@@ -76,7 +76,7 @@ def add_alias():
 @geography_bp.route("/houses/new", methods=["GET", "POST"])
 @login_required
 def create_house():
-    require_management_access()
+    require_operational_management_access()
     localities = Locality.query.order_by(Locality.name).all()
     if request.method == "POST":
         validate_csrf()
