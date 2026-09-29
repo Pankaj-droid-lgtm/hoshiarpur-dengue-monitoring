@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block title %}My visits{% endblock %}
+{% block content %}
+<section class="mobile-hero"><h2>My visits</h2></section><section class="panel">{% for visit in visits %}<article class="result-row"><strong>{{ visit.house.house_code }}</strong><span>{{ visit.visited_at.strftime('%d-%m-%Y %H:%M') }} · {{ visit.visit_outcome }}</span></article>{% else %}<p class="empty-state">No field visits have been recorded.</p>{% endfor %}</section>
+{% endblock %}

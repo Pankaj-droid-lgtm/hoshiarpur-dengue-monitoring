@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block title %}Search house{% endblock %}
+{% block content %}
+<section class="mobile-hero"><h2>Search assigned house</h2><p>Only houses assigned to you are shown.</p></section><form class="filter-bar" method="get"><input name="q" value="{{ query }}" placeholder="Address or house detail"><button type="submit">Search</button></form><section class="panel">{% for house in houses %}<article class="result-row"><strong>{{ house.house_code }}</strong><span>{{ house.address }}</span></article>{% else %}<p class="empty-state">{{ 'No assigned house matches this search.' if query else 'Enter a search term to find an assigned house.' }}</p>{% endfor %}</section>
+{% endblock %}

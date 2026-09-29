@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Worker account{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">Account security</p><h2>{{ worker.full_name }}</h2><p>{{ worker.official_worker_id }}</p></div></div>
+<form method="post" class="panel form-grid">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label>Login identifier <input name="username" value="{{ worker.user.username if worker.user else '' }}" required></label>
+  <label>Role/access level <select name="role">{% for role in roles %}<option value="{{ role }}" {% if worker.user and worker.user.role == role %}selected{% endif %}>{{ role.replace('_', ' ') }}</option>{% endfor %}</select></label>
+  <label>Password or PIN <input name="password" type="password" autocomplete="new-password" minlength="12" required></label>
+  <p class="form-note">Use at least 12 characters. The application stores only a secure password hash.</p>
+  <div class="form-actions"><button type="submit">Save account</button><a class="button secondary" href="{{ url_for('workers.worker_detail', worker_id=worker.id) }}">Cancel</a></div>
+</form>
+{% endblock %}

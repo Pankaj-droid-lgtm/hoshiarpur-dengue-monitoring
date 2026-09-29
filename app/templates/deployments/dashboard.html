@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Daily deployments{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">Field operations</p><h2>Daily deployments</h2></div><a class="button" href="{{ url_for('deployments.create_deployment') }}">Create deployment</a></div>
+<form class="filter-bar" method="get"><label>Date <input type="date" name="date" value="{{ selected_date.isoformat() }}"></label><button type="submit">View</button></form>
+<section class="panel table-panel"><table><thead><tr><th>Worker</th><th>Worker ID</th><th>Block</th><th>Locality</th><th>Target</th><th>Completed</th><th>Pending</th><th>Status</th><th>Supervisor</th></tr></thead><tbody>
+{% for deployment in deployments %}{% set completed = deployment.house_assignments|selectattr('completed_at')|list|length %}{% set target = deployment.house_assignments|length %}<tr><td><a href="{{ url_for('deployments.detail', deployment_id=deployment.id) }}">{{ deployment.worker_name }}</a></td><td>{{ deployment.worker_code or '—' }}</td><td>{{ deployment.block.name }}</td><td>{{ deployment.locality.name if deployment.locality else 'All localities' }}</td><td>{{ target }}</td><td>{{ completed }}</td><td>{{ target - completed }}</td><td><span class="status {{ deployment_status(deployment) }}">{{ deployment_status(deployment).replace('_', ' ') }}</span></td><td>{{ deployment.supervisor_name or 'Not assigned' }}</td></tr>{% else %}<tr><td colspan="9" class="empty-state">No deployments for this date.</td></tr>{% endfor %}</tbody></table></section>
+{% endblock %}

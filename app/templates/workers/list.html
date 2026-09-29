@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Workers{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">Administration</p><h2>Worker management</h2></div><a class="button" href="{{ url_for('workers.create_worker') }}">Add worker</a></div>
+<form class="filter-bar" method="get">
+  <input name="q" value="{{ query }}" placeholder="Search worker ID or name">
+  <select name="active"><option value="active" {% if active_filter == 'active' %}selected{% endif %}>Active workers</option><option value="inactive" {% if active_filter == 'inactive' %}selected{% endif %}>Inactive workers</option><option value="all" {% if active_filter == 'all' %}selected{% endif %}>All workers</option></select>
+  <button type="submit">Search</button>
+</form>
+<section class="panel table-panel">
+  <table><thead><tr><th>Worker ID</th><th>Name</th><th>Designation</th><th>Supervisor</th><th>Access</th><th>Availability</th><th>Status</th></tr></thead><tbody>
+  {% for worker in workers %}<tr>
+    <td><a href="{{ url_for('workers.worker_detail', worker_id=worker.id) }}">{{ worker.official_worker_id }}</a></td><td>{{ worker.full_name }}</td><td>{{ worker.designation }}</td><td>{{ worker.supervisor.full_name if worker.supervisor else '—' }}</td><td>{{ worker.user.role if worker.user else 'No account' }}</td><td>{{ worker.availability_status }}</td><td>{{ 'Active' if worker.is_active else 'Inactive' }}</td>
+  </tr>{% else %}<tr><td colspan="7" class="empty-state">No workers match this filter. Import or add verified roster records when available.</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+{% endblock %}

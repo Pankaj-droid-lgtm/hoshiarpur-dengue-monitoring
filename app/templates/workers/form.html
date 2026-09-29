@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit worker' if worker else 'Add worker' }}{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">Administration</p><h2>{{ 'Edit worker' if worker else 'Add worker' }}</h2></div></div>
+<form method="post" class="panel form-grid">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  {% if not worker %}<label>Official worker ID <input name="official_worker_id" required></label>{% else %}<label>Official worker ID <input value="{{ worker.official_worker_id }}" disabled></label>{% endif %}
+  <label>Full name <input name="full_name" value="{{ worker.full_name if worker else '' }}" required></label>
+  <label>Designation/category <input name="designation" value="{{ worker.designation if worker else '' }}" required></label>
+  <label>Mobile/login identifier <input name="phone_number" value="{{ worker.phone_number if worker and worker.phone_number else '' }}"></label>
+  <label>Supervisor <select name="supervisor_id"><option value="">Not assigned</option>{% for supervisor in supervisors %}<option value="{{ supervisor.id }}" {% if worker and worker.supervisor_id == supervisor.id %}selected{% endif %}>{{ supervisor.official_worker_id }} — {{ supervisor.full_name }}</option>{% endfor %}</select></label>
+  <label>Availability <select name="availability_status"><option value="available" {% if not worker or worker.availability_status == 'available' %}selected{% endif %}>Available</option><option value="unavailable" {% if worker and worker.availability_status == 'unavailable' %}selected{% endif %}>Unavailable</option></select></label>
+  <label class="check-row"><input type="checkbox" name="requires_login" {% if worker and worker.requires_login %}checked{% endif %}> Login required</label>
+  <div class="form-actions"><button type="submit">Save worker</button><a class="button secondary" href="{{ url_for('workers.worker_list') }}">Cancel</a></div>
+</form>
+{% endblock %}
