@@ -45,17 +45,36 @@ production deployment.
 Keep these values in the cloud platform's secret/environment configuration.
 Never commit them to the repository.
 
-## Production startup
+## Production service (EC2)
 
-The production WSGI entry point is [wsgi.py](wsgi.py). After setting the
-required environment variables and installing the pinned dependencies, create
-the empty database deliberately:
+The production WSGI entry point is [wsgi.py](wsgi.py). Use the committed
+[systemd unit template](deploy/hoshiarpur-dengue-monitoring.service) rather
+than a manually started Gunicorn process. It runs as `ec2-user`, loads the
+secret configuration from `/etc/hoshiarpur-dengue-monitoring.env`, restarts on
+failure, and starts after a reboot.
+
+On EC2, create the protected environment file without displaying the generated
+secret, then install and start the unit:
 
 ```sh
-flask --app app:create_app init-db
-flask --app app:create_app create-admin
-gunicorn --bind "${DENGUE_HOST:-0.0.0.0}:${DENGUE_PORT:-8000}" wsgi:app
+sudo install -o root -g ec2-user -m 0640 /dev/null /etc/hoshiarpur-dengue-monitoring.env
+sudo sh -c 'umask 077; printf "DENGUE_SECRET_KEY=%s\nDENGUE_SESSION_COOKIE_SECURE=true\n" "$(/home/ec2-user/hoshiarpur-dengue-monitoring/.venv/bin/python -c "import secrets; print(secrets.token_urlsafe(48))")" > /etc/hoshiarpur-dengue-monitoring.env'
+sudo install -o root -g root -m 0644 deploy/hoshiarpur-dengue-monitoring.service /etc/systemd/system/hoshiarpur-dengue-monitoring.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now hoshiarpur-dengue-monitoring
+sudo systemctl status hoshiarpur-dengue-monitoring
 ```
+
+`DENGUE_UPLOAD_DIRECTORY` is optional: when unset, Flask uses the private
+`instance/uploads` directory. If it is set in the environment file, use a
+persistent directory outside public static files that `ec2-user` can write.
+Do not put an environment file, database, uploads, or backups in Git.
+
+For an existing production database, **do not run** `init-db` during code
+deployment. Normal startup does not create, replace, or initialize the SQLite
+database. `init-db` is only for deliberately creating a brand-new empty local
+or test database. Likewise, create an administrator only for a new empty
+installation.
 
 Use a managed database URL for shared/cloud deployments. The application does
 not automatically import Excel workbooks or create operational records.

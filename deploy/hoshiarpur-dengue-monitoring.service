@@ -1,0 +1,17 @@
+[Unit]
+Description=Hoshiarpur Dengue Monitoring Gunicorn service
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/home/ec2-user/hoshiarpur-dengue-monitoring
+EnvironmentFile=/etc/hoshiarpur-dengue-monitoring.env
+ExecStart=/home/ec2-user/hoshiarpur-dengue-monitoring/.venv/bin/gunicorn --bind 0.0.0.0:8000 wsgi:app
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
