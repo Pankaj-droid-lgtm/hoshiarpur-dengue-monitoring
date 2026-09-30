@@ -16,6 +16,7 @@ from app.models import (
 )
 from app.services.historical_import import import_historical_workbook
 from app.services.migrations import add_household_member_column
+from app.services.reference_geography import REFERENCE_GEOGRAPHY, load_reference_geography
 
 
 class TestConfig:
@@ -70,7 +71,7 @@ class OperationalWorkflowTests(unittest.TestCase):
         return self.post("/auth/login", {"username": username, "password": password})
 
     def create_deployment(self, worker_id):
-        response = self.post("/deployments/new", {"deployment_date": date.today().isoformat(), "worker_id": str(worker_id), "team_name": f"Team {worker_id}", "block_id": str(self.ids["block"]), "locality_id": str(self.ids["locality"])})
+        response = self.post("/deployments/new", {"deployment_date": date.today().isoformat(), "worker_id": str(worker_id), "team_name": f"Team {worker_id}", "area_type": "rural", "block_id": str(self.ids["block"]), "locality_id": str(self.ids["locality"])})
         self.assertEqual(response.status_code, 302)
         with self.app.app_context():
             return Deployment.query.order_by(Deployment.id.desc()).first().id
@@ -133,6 +134,13 @@ class OperationalWorkflowTests(unittest.TestCase):
             self.assertEqual(Photo.query.count(), 1)
             self.assertEqual(LarvalObservation.query.count(), 1)
             self.assertEqual(ReinspectionTask.query.count(), 1)
+            house = db.session.get(House, self.ids["house"])
+            house.reference_photo_key = "reference.png"
+            house.reference_photo_content_type = "image/png"
+            with open(f"{self.app.config['UPLOAD_DIRECTORY']}/reference.png", "wb") as stream:
+                stream.write(b"\x89PNG\r\n\x1a\nreference")
+            photo_id = Photo.query.one().id
+            db.session.commit()
         self.post("/auth/logout")
         self.assertEqual(self.login("adc-test", "Adc-password-12345").status_code, 302)
         self.assertEqual(self.client.get("/monitoring/").status_code, 200)
@@ -142,6 +150,12 @@ class OperationalWorkflowTests(unittest.TestCase):
         self.assertEqual(self.post("/deployments/new", {}).status_code, 403)
         self.assertEqual(self.post(f"/deployments/{first_deployment}/assignments", {"house_id": str(self.ids["house"])}).status_code, 403)
         self.assertEqual(self.client.post(f"/visits/assignments/{assignment_id}", data={"csrf_token": "test-csrf"}).status_code, 403)
+        self.assertEqual(self.client.get(f"/deployments/houses/{self.ids['house']}/reference-photo").status_code, 200)
+        self.assertEqual(self.client.get(f"/visits/photos/{photo_id}").status_code, 200)
+        self.post("/auth/logout")
+        self.assertEqual(self.login("W001", "Worker-password-123").status_code, 302)
+        self.assertEqual(self.client.get(f"/deployments/houses/{self.ids['house']}/reference-photo").status_code, 403)
+        self.assertEqual(self.client.get(f"/visits/photos/{photo_id}").status_code, 403)
 
     def test_historical_import_is_idempotent_and_preserves_operational_data(self):
         workbook = Workbook()
@@ -170,6 +184,7 @@ class OperationalWorkflowTests(unittest.TestCase):
         response = self.post("/deployments/new", {
             "deployment_date": date.today().isoformat(),
             "worker_ids": [str(self.ids["first_worker"]), str(self.ids["second_worker"])],
+            "area_type": "rural",
             "block_id": str(self.ids["block"]),
             "locality_id": str(self.ids["locality"]),
             "team_name": "Team 1",
@@ -204,6 +219,7 @@ class OperationalWorkflowTests(unittest.TestCase):
         response = self.post("/deployments/new", {
             "deployment_date": date.today().isoformat(),
             "worker_ids": [str(self.ids["first_worker"]), str(self.ids["second_worker"]), str(self.ids["third_worker"]), str(self.ids["fourth_worker"]), str(self.ids["fifth_worker"])],
+            "area_type": "rural",
             "block_id": str(self.ids["block"]),
             "locality_id": str(self.ids["locality"]),
             "team_name": "Team 1",
@@ -250,7 +266,7 @@ class OperationalWorkflowTests(unittest.TestCase):
         self.assertEqual(self.login("admin-test", "Admin-password-123").status_code, 302)
         response = self.post("/deployments/new", {
             "deployment_date": (date.today() + timedelta(days=1)).isoformat(),
-            "worker_ids": [str(self.ids["second_worker"])], "block_id": str(self.ids["block"]),
+            "worker_ids": [str(self.ids["second_worker"])], "area_type": "rural", "block_id": str(self.ids["block"]),
             "locality_id": str(self.ids["second_locality"]), "team_name": "Janoari Team",
         })
         self.assertEqual(response.status_code, 302)
@@ -302,6 +318,31 @@ class OperationalWorkflowTests(unittest.TestCase):
             columns = {row[1] for row in connection.execute("PRAGMA table_info(houses)")}
             connection.close()
             self.assertIn("household_member_name", columns)
+
+    def test_reference_geography_is_idempotent_and_enforces_area_type(self):
+        with self.app.app_context():
+            first = load_reference_geography()
+            second = load_reference_geography()
+            self.assertGreater(first[1], 0)
+            self.assertEqual(second, (0, 0, 0, 0))
+            urban_blocks = {item.name for item in Block.query.filter_by(is_urban=True)}
+            rural_blocks = {item.name for item in Block.query.filter_by(is_urban=False)}
+            self.assertIn("Dasuya", urban_blocks)
+            self.assertIn("Paldi", rural_blocks)
+            self.assertEqual(Locality.query.filter_by(name="Singriwala").count(), 1)
+            self.assertEqual(len(REFERENCE_GEOGRAPHY), Block.query.filter(Block.name.in_([item[0] for item in REFERENCE_GEOGRAPHY])).count())
+        self.assertEqual(self.login("admin-test", "Admin-password-123").status_code, 302)
+        form = self.client.get("/deployments/new")
+        self.assertIn(b"Area type", form.data)
+        response = self.post("/deployments/new", {
+            "deployment_date": date.today().isoformat(),
+            "worker_ids": [str(self.ids["first_worker"])],
+            "area_type": "urban",
+            "block_id": str(self.ids["block"]),
+            "locality_id": str(self.ids["locality"]),
+            "team_name": "Wrong area type",
+        }, follow_redirects=True)
+        self.assertIn(b"does not belong to the selected area type", response.data)
 
 
 if __name__ == "__main__":

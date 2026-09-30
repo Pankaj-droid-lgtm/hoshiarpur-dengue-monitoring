@@ -2,7 +2,7 @@ from datetime import date, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from flask import Blueprint, abort, current_app, flash, redirect, render_template, request, url_for
+from flask import Blueprint, abort, current_app, flash, redirect, render_template, request, send_from_directory, url_for
 from flask_login import current_user, login_required
 from werkzeug.utils import secure_filename
 
@@ -13,7 +13,7 @@ from .models import (
 )
 from .security import validate_csrf
 from .services.audit import log_change
-from .services.reference_geography import REFERENCE_GEOGRAPHY
+from .services.reference_geography import REFERENCE_GEOGRAPHY, area_type_for_block
 from .services.permissions import (
     has_operational_management_access,
     require_management_access,
@@ -75,12 +75,15 @@ def create_deployment():
         workers = Worker.query.filter(Worker.id.in_(worker_ids), Worker.is_active.is_(True)).all() if worker_ids else []
         block_id = optional_int(request.form.get("block_id"))
         block = db.session.get(Block, block_id) if block_id else None
+        area_type = request.form.get("area_type", "").strip().lower()
         locality_id = request.form.get("locality_id", "").strip()
         locality = db.session.get(Locality, optional_int(locality_id)) if locality_id else None
         scheduled_date = parse_date(request.form.get("deployment_date"))
         team_name = request.form.get("team_name", "").strip()
-        if not workers or len(workers) != len(set(worker_ids)) or not block or not locality or not scheduled_date or not team_name:
-            flash("Date, team name, active workers, block, and locality are required.", "error")
+        if not workers or len(workers) != len(set(worker_ids)) or not block or not locality or not scheduled_date or not team_name or area_type not in {"urban", "rural"}:
+            flash("Date, team name, active workers, area type, block, and locality are required.", "error")
+        elif area_type_for_block(block) != area_type:
+            flash("The selected block does not belong to the selected area type.", "error")
         elif locality and locality.block_id != block.id:
             flash("The locality does not belong to the selected block.", "error")
         elif not is_approved_location(block, locality):
@@ -160,8 +163,20 @@ def team_detail(deployment_id: int):
         members = [item for item in members if can_access_deployment(item)]
     return render_template(
         "deployments/team_detail.html", team=deployment, members=members,
-        deployment_status=deployment_status, can_manage=has_operational_management_access(),
+        deployment_status=deployment_status, can_manage=has_operational_management_access(), can_view=True,
     )
+
+
+@deployments_bp.get("/houses/<int:house_id>/reference-photo")
+@login_required
+def reference_photo_file(house_id: int):
+    """Serve permanent house reference photos only to authorized portal users."""
+    house = db.get_or_404(House, house_id)
+    if not house.reference_photo_key or not can_access_house(house):
+        abort(403)
+    if Path(house.reference_photo_key).name != house.reference_photo_key:
+        abort(404)
+    return send_from_directory(Path(current_app.config["UPLOAD_DIRECTORY"]).resolve(), house.reference_photo_key)
 
 
 @deployments_bp.post("/<int:deployment_id>/start")
@@ -407,7 +422,17 @@ def approved_localities() -> list[Locality]:
 def is_approved_location(block: Block | None, locality: Locality | None) -> bool:
     if not block or not locality:
         return False
-    return any(block.name == block_name and locality.name in locality_names for block_name, _, locality_names in REFERENCE_GEOGRAPHY)
+    return any(
+        block.name == block_name and area_type_for_block(block) == area_type and locality.name in locality_names
+        for block_name, area_type, locality_names in REFERENCE_GEOGRAPHY
+    )
+
+
+def can_access_house(house: House) -> bool:
+    """Management roles may monitor all photos; workers are limited to their deployments."""
+    if current_user.role in {"admin", "dc", "adc", "district_officer", "block_officer", "supervisor"}:
+        return True
+    return any(can_access_deployment(assignment.deployment) for assignment in house.assignments)
 
 
 def is_valid_team_task(deployment: Deployment) -> bool:

@@ -6,7 +6,8 @@
 <form method="post" class="panel form-grid" id="team-task-form" autocomplete="off"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <label>Date <input type="date" name="deployment_date" value="{{ today.isoformat() }}" required></label><label>Team name/number <input name="team_name" required placeholder="e.g. Team 1"></label>
 <section class="worker-selector full-width" aria-labelledby="worker-selector-title"><div class="selector-heading"><div><label id="worker-selector-title" for="worker-search">Select permanent workers</label><span class="form-note" id="worker-count">0 workers selected</span></div><div class="selector-actions"><button type="button" class="button secondary" id="select-all-workers">Select all</button><button type="button" class="button secondary" id="clear-workers">Clear</button></div></div><input id="worker-search" type="search" placeholder="Search Worker ID, name, or designation"><div class="selected-worker-chips" id="selected-worker-chips" aria-live="polite"></div><div class="worker-checklist" id="worker-checklist">{% for worker in workers %}<label class="worker-option" data-search="{{ worker.official_worker_id }} {{ worker.full_name }} {{ worker.designation }}"><input type="checkbox" name="worker_ids" value="{{ worker.id }}"><span><strong>{{ worker.official_worker_id }}</strong> — {{ worker.full_name }}<small>{{ worker.designation }}</small></span></label>{% endfor %}</div></section>
-<label>Block <select name="block_id" id="block_id" required><option value="">Select block</option>{% for block in blocks %}<option value="{{ block.id }}">{{ block.name }}</option>{% endfor %}</select></label>
+<label>Area type <select name="area_type" id="area_type" required><option value="">Select area type</option><option value="urban">Urban</option><option value="rural">Rural</option></select></label>
+<label>Block / urban area <select name="block_id" id="block_id" disabled required><option value="">Select area type first</option>{% for block in blocks %}<option value="{{ block.id }}" data-area-type="{{ 'urban' if block.is_urban else 'rural' }}" hidden>{{ block.name }}</option>{% endfor %}</select></label>
 <label>Locality/village <select name="locality_id" id="locality_id" disabled required><option value="">Select locality in selected block</option>{% for locality in localities %}<option value="{{ locality.id }}" data-block-id="{{ locality.block_id }}" hidden>{{ locality.block.name }} — {{ locality.name }}</option>{% endfor %}</select></label>
 <label>Priority <select name="priority"><option value="normal">Normal</option><option value="high">High</option><option value="priority_recheck">Priority recheck</option></select></label>
 <label class="full-width">Notes <textarea name="notes" rows="3"></textarea></label><p class="form-note full-width">House details are collected by field workers after reaching the assigned locality.</p>
@@ -14,6 +15,7 @@
 <script>
   const form = document.getElementById("team-task-form");
   const blockSelect = document.getElementById("block_id");
+  const areaTypeSelect = document.getElementById("area_type");
   const localitySelect = document.getElementById("locality_id");
   const dateInput = document.querySelector('[name="deployment_date"]');
   const workerSearch = document.getElementById("worker-search");
@@ -36,6 +38,15 @@
     const term = workerSearch.value.trim().toLowerCase();
     workerOptions.forEach((option) => { option.hidden = !option.dataset.search.toLowerCase().includes(term); });
   }
+  function filterBlocks() {
+    const selectedAreaType = areaTypeSelect.value;
+    blockSelect.value = "";
+    localitySelect.value = "";
+    blockSelect.disabled = !selectedAreaType;
+    localitySelect.disabled = true;
+    [...blockSelect.options].forEach((option) => { option.hidden = Boolean(option.value) && option.dataset.areaType !== selectedAreaType; });
+    [...localitySelect.options].forEach((option) => { option.hidden = Boolean(option.value); });
+  }
   function filterLocalities() {
     const selectedBlockId = blockSelect.value;
     localitySelect.value = "";
@@ -46,9 +57,10 @@
   workerChecks.forEach((input) => input.addEventListener("change", syncWorkers));
   document.getElementById("select-all-workers").addEventListener("click", () => { workerChecks.forEach((input) => { input.checked = true; }); syncWorkers(); });
   document.getElementById("clear-workers").addEventListener("click", () => { workerChecks.forEach((input) => { input.checked = false; }); syncWorkers(); });
+  areaTypeSelect.addEventListener("change", filterBlocks);
   blockSelect.addEventListener("change", filterLocalities);
-  window.addEventListener("pageshow", (event) => { if (event.persisted) { form.reset(); syncWorkers(); filterLocalities(); } });
-  filterLocalities();
+  window.addEventListener("pageshow", (event) => { if (event.persisted) { form.reset(); syncWorkers(); filterBlocks(); } });
+  filterBlocks();
   syncWorkers();
 </script>
 {% endblock %}

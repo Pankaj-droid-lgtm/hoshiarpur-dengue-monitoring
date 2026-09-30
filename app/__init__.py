@@ -123,12 +123,16 @@ def create_app(config_object=Config) -> Flask:
         """Load the approved block/locality reference without changing existing records."""
         with app.app_context():
             try:
-                blocks_added, localities_added = load_reference_geography()
+                blocks_added, localities_added, aliases_added, high_risk_added = load_reference_geography()
                 db.session.commit()
             except Exception as error:
                 db.session.rollback()
                 raise click.ClickException(f"Geography load failed; no records were committed: {error}") from error
-        click.echo(f"Reference geography loaded: {blocks_added} blocks and {localities_added} localities added.")
+        click.echo(
+            "Reference geography loaded: "
+            f"{blocks_added} blocks, {localities_added} localities, "
+            f"{aliases_added} aliases, and {high_risk_added} high-risk references added."
+        )
 
     @app.cli.command("migrate-household-member")
     def migrate_household_member():
