@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Team field task{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">Daily field task</p><h2>{{ team.team_name or 'Individual task' }}</h2><p>{{ team.deployment_date.strftime('%d-%m-%Y') }} · {{ team.block.name }} · {{ team.locality.name if team.locality else 'Not specified' }}</p></div></div>
+<section class="panel details-grid"><div><span>Team members</span><strong>{{ members|length }}</strong></div><div><span>Location</span><strong>{{ team.block.name }}, {{ team.locality.name if team.locality else 'Not specified' }}</strong></div><div><span>Total houses</span><strong>{{ members|map(attribute='house_assignments')|map('length')|sum }}</strong></div></section>
+<section class="panel table-panel"><h3>Worker allocations</h3><table><thead><tr><th>Worker</th><th>Worker ID</th><th>My houses</th><th>Completed</th><th>Pending</th><th>Status</th></tr></thead><tbody>{% for member in members %}{% set completed = member.house_assignments|selectattr('completed_at')|list|length %}{% set target = member.house_assignments|length %}<tr><td>{% if can_manage %}<a href="{{ url_for('deployments.detail', deployment_id=member.id) }}">{{ member.worker_name }}</a>{% else %}{{ member.worker_name }}{% endif %}</td><td>{{ member.worker_code or '—' }}</td><td>{{ target }}</td><td>{{ completed }}</td><td>{{ target - completed }}</td><td><span class="status {{ deployment_status(member) }}">{{ deployment_status(member).replace('_', ' ') }}</span></td></tr>{% endfor %}</tbody></table></section>
+{% endblock %}

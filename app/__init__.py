@@ -18,6 +18,7 @@ from .workers import workers_bp
 from .visits import visits_bp
 from .security import csrf_token
 from .services.historical_import import import_high_risk_reference, import_historical_workbook
+from .services.reference_geography import load_reference_geography
 
 
 def create_app(config_object=Config) -> Flask:
@@ -110,5 +111,17 @@ def create_app(config_object=Config) -> Flask:
                 db.session.rollback()
                 raise click.ClickException(f"Import failed; no records were committed: {error}") from error
         click.echo(f"Import complete: {summary.inserted} inserted, {summary.errors} errors.")
+
+    @app.cli.command("load-reference-geography")
+    def load_geography():
+        """Load the approved block/locality reference without changing existing records."""
+        with app.app_context():
+            try:
+                blocks_added, localities_added = load_reference_geography()
+                db.session.commit()
+            except Exception as error:
+                db.session.rollback()
+                raise click.ClickException(f"Geography load failed; no records were committed: {error}") from error
+        click.echo(f"Reference geography loaded: {blocks_added} blocks and {localities_added} localities added.")
 
     return app

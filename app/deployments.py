@@ -52,7 +52,7 @@ def dashboard():
     selected_date = parse_date(request.args.get("date")) or date.today()
     deployments = Deployment.query.filter_by(deployment_date=selected_date).order_by(Deployment.id).all()
     return render_template(
-        "deployments/dashboard.html", deployments=deployments, selected_date=selected_date,
+        "deployments/dashboard.html", team_tasks=build_team_tasks(deployments), selected_date=selected_date,
         deployment_status=deployment_status
     )
 
@@ -72,12 +72,24 @@ def create_deployment():
         locality_id = request.form.get("locality_id", "").strip()
         locality = db.session.get(Locality, optional_int(locality_id)) if locality_id else None
         scheduled_date = parse_date(request.form.get("deployment_date"))
-        if not workers or len(workers) != len(set(worker_ids)) or not block or not scheduled_date:
-            flash("Date, at least one active permanent worker, and block are required.", "error")
+        team_name = request.form.get("team_name", "").strip()
+        if not workers or len(workers) != len(set(worker_ids)) or not block or not locality or not scheduled_date or not team_name:
+            flash("Date, team name, active workers, block, and locality are required.", "error")
         elif locality and locality.block_id != block.id:
             flash("The locality does not belong to the selected block.", "error")
+        elif Deployment.query.filter_by(deployment_date=scheduled_date, team_name=team_name).first():
+            flash("That team name is already assigned for this date.", "error")
         else:
             task_filter = request.form.get("risk_filter", "all")
+            houses = eligible_task_houses(block, locality, scheduled_date, task_filter)
+            if not houses:
+                flash("No eligible houses are available for this team task.", "error")
+                return render_template(
+                    "deployments/form.html", workers=active_workers(),
+                    blocks=Block.query.order_by(Block.name).all(),
+                    localities=Locality.query.order_by(Locality.block_id, Locality.name).all(),
+                    high_risk_house_ids=high_risk_house_ids(), today=date.today(),
+                )
             deployments = []
             for worker in sorted(workers, key=lambda item: item.official_worker_id):
                 deployment = Deployment(
@@ -92,7 +104,7 @@ def create_deployment():
                     supervisor=worker.supervisor,
                     supervisor_name=worker.supervisor.full_name if worker.supervisor else None,
                     deployment_date=scheduled_date,
-                    team_name=request.form.get("team_name", "").strip() or None,
+                    team_name=team_name,
                     priority=request.form.get("priority", "normal"),
                     notes=request.form.get("notes", "").strip() or None,
                     assigned_by_user_id=current_user.id,
@@ -100,14 +112,13 @@ def create_deployment():
                 db.session.add(deployment)
                 deployments.append(deployment)
             db.session.flush()
-            houses = eligible_task_houses(block, locality, scheduled_date, task_filter)
             for index, house in enumerate(houses):
                 db.session.add(HouseAssignment(deployment=deployments[index % len(deployments)], house=house, priority="priority_recheck" if house.id in high_risk_house_ids(block, locality) else deployments[index % len(deployments)].priority))
             for deployment in deployments:
                 log_change("create", "deployment", deployment.id, after={"date": str(scheduled_date), "worker_id": deployment.worker_id, "block_id": block.id, "risk_filter": task_filter})
             db.session.commit()
             flash(f"Task assigned to {len(deployments)} workers with {len(houses)} eligible houses distributed.", "success")
-            return redirect(url_for("deployments.dashboard", date=scheduled_date.isoformat()))
+            return redirect(url_for("deployments.team_detail", deployment_id=deployments[0].id))
     return render_template(
         "deployments/form.html",
         workers=active_workers(),
@@ -153,6 +164,21 @@ def detail(deployment_id: int):
         destinations=destinations, deployment_status=deployment_status,
         house_query=request.args.get("house_q", "").strip(), can_manage=has_operational_management_access(),
         house_statuses=house_statuses(assignment.house for assignment in assignments),
+    )
+
+
+@deployments_bp.get("/team/<int:deployment_id>")
+@login_required
+def team_detail(deployment_id: int):
+    deployment = db.get_or_404(Deployment, deployment_id)
+    members = team_deployments(deployment)
+    if not has_operational_management_access() and not any(can_access_deployment(item) for item in members):
+        abort(403)
+    if not has_operational_management_access():
+        members = [item for item in members if can_access_deployment(item)]
+    return render_template(
+        "deployments/team_detail.html", team=deployment, members=members,
+        deployment_status=deployment_status, can_manage=has_operational_management_access(),
     )
 
 
@@ -265,8 +291,16 @@ def mobile():
             Deployment.deployment_date == date.today(),
             ReinspectionTask.status == "open",
         ).distinct().count()
+    tasks = []
     statuses = house_statuses(assignment.house for deployment in deployments for assignment in deployment.house_assignments)
-    return render_template("deployments/mobile.html", deployments=deployments, priority_rechecks=priority_rechecks, today=date.today(), deployment_status=deployment_status, house_statuses=statuses)
+    for deployment in deployments:
+        members = team_deployments(deployment)
+        tasks.append({
+            "deployment": deployment,
+            "members": members,
+            "member_codes": ", ".join(item.worker_code or item.worker_name for item in members),
+        })
+    return render_template("deployments/mobile.html", tasks=tasks, priority_rechecks=priority_rechecks, today=date.today(), deployment_status=deployment_status, house_statuses=statuses)
 
 
 @deployments_bp.get("/mobile/houses")
@@ -293,6 +327,40 @@ def mobile_visits():
 
 def active_workers() -> list[Worker]:
     return Worker.query.filter_by(is_active=True).order_by(Worker.full_name).all()
+
+
+def team_deployments(deployment: Deployment) -> list[Deployment]:
+    """Return the worker deployments that form one daily team task."""
+    if not deployment.team_name:
+        return [deployment]
+    return Deployment.query.filter_by(
+        deployment_date=deployment.deployment_date,
+        team_name=deployment.team_name,
+        block_id=deployment.block_id,
+        locality_id=deployment.locality_id,
+    ).order_by(Deployment.worker_code, Deployment.id).all()
+
+
+def build_team_tasks(deployments: list[Deployment]) -> list[dict]:
+    """Group worker-level records for the operational dashboard only."""
+    groups = {}
+    for deployment in deployments:
+        key = (
+            deployment.team_name or f"Individual task {deployment.id}",
+            deployment.block_id,
+            deployment.locality_id,
+        )
+        groups.setdefault(key, []).append(deployment)
+    tasks = []
+    for members in groups.values():
+        target = sum(len(item.house_assignments) for item in members)
+        completed = sum(sum(assignment.completed_at is not None for assignment in item.house_assignments) for item in members)
+        tasks.append({
+            "deployment": members[0], "members": members, "target": target, "completed": completed,
+            "pending": target - completed, "member_codes": ", ".join(item.worker_code or item.worker_name for item in members),
+            "status": "completed" if target and completed == target else deployment_status(members[0]),
+        })
+    return tasks
 
 
 def available_houses(deployment: Deployment, search: str) -> list[House]:

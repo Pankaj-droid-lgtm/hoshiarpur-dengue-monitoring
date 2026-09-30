@@ -1,16 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Create deployment{% endblock %}
 {% block content %}
-<div class="page-heading"><div><p class="eyebrow">Field operations</p><h2>Create daily deployment</h2></div></div>
+<div class="page-heading"><div><p class="eyebrow">Field operations</p><h2>Create daily field task</h2></div></div>
 {% if not blocks or not workers %}<p class="notice">Create approved geography and an active permanent worker before creating deployments.</p>{% endif %}
 <form method="post" class="panel form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-<label>Date <input type="date" name="deployment_date" value="{{ today.isoformat() }}" required></label>
+<label>Date <input type="date" name="deployment_date" value="{{ today.isoformat() }}" required></label><label>Team name/number <input name="team_name" required placeholder="e.g. Team 1"></label>
 <label>Permanent workers <select name="worker_ids" id="worker_ids" multiple required size="7">{% for worker in workers %}<option value="{{ worker.id }}">{{ worker.official_worker_id }} — {{ worker.full_name }} ({{ worker.designation }})</option>{% endfor %}</select><span class="form-note" id="worker-count">0 workers selected</span></label>
 <label>Block <select name="block_id" id="block_id" required><option value="">Select block</option>{% for block in blocks %}<option value="{{ block.id }}">{{ block.name }}</option>{% endfor %}</select></label>
-<label>Locality/village <select name="locality_id" id="locality_id" disabled><option value="">All localities in selected block</option>{% for locality in localities %}<option value="{{ locality.id }}" data-block-id="{{ locality.block_id }}" hidden>{{ locality.block.name }} — {{ locality.name }}</option>{% endfor %}</select></label>
+<label>Locality/village <select name="locality_id" id="locality_id" disabled required><option value="">Select locality in selected block</option>{% for locality in localities %}<option value="{{ locality.id }}" data-block-id="{{ locality.block_id }}" hidden>{{ locality.block.name }} — {{ locality.name }}</option>{% endfor %}</select></label>
 <label>House workload <select name="risk_filter" id="risk_filter"><option value="all">All eligible houses</option><option value="high_risk">High-risk localities only</option><option value="normal">Other eligible houses</option></select><span class="form-note" id="eligible-house-count">Select date and block to calculate eligible houses.</span></label>
-<label>Team <input name="team_name"></label><label>Priority <select name="priority"><option value="normal">Normal</option><option value="high">High</option><option value="priority_recheck">Priority recheck</option></select></label>
-<label class="full-width">Notes <textarea name="notes" rows="3"></textarea></label><p class="form-note full-width">Each selected permanent worker receives a separate daily deployment. Eligible operational houses are distributed evenly; existing same-day assignments are retained and excluded.</p>
+<label>Priority <select name="priority"><option value="normal">Normal</option><option value="high">High</option><option value="priority_recheck">Priority recheck</option></select></label>
+<label class="full-width">Notes <textarea name="notes" rows="3"></textarea></label><p class="form-note full-width">One team task assigns all selected workers to this exact block and locality. Eligible houses are distributed evenly between members and cannot come from another locality.</p>
 <div class="form-actions"><button type="submit" {% if not blocks or not workers %}disabled{% endif %}>Assign daily task</button><a class="button secondary" href="{{ url_for('deployments.dashboard') }}">Cancel</a></div></form>
 <script>
   const blockSelect = document.getElementById("block_id");

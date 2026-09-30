@@ -61,7 +61,7 @@ class OperationalWorkflowTests(unittest.TestCase):
         return self.post("/auth/login", {"username": username, "password": password})
 
     def create_deployment(self, worker_id):
-        response = self.post("/deployments/new", {"deployment_date": date.today().isoformat(), "worker_id": str(worker_id), "block_id": str(self.ids["block"]), "locality_id": str(self.ids["locality"])})
+        response = self.post("/deployments/new", {"deployment_date": date.today().isoformat(), "worker_id": str(worker_id), "team_name": f"Team {worker_id}", "block_id": str(self.ids["block"]), "locality_id": str(self.ids["locality"])})
         self.assertEqual(response.status_code, 302)
         with self.app.app_context():
             return Deployment.query.order_by(Deployment.id.desc()).first().id
@@ -80,8 +80,18 @@ class OperationalWorkflowTests(unittest.TestCase):
     def test_assignment_isolation_reassignment_and_completion(self):
         self.assertEqual(self.login("admin-test", "Admin-password-123").status_code, 302)
         first_deployment = self.create_deployment(self.ids["first_worker"])
-        second_deployment = self.create_deployment(self.ids["second_worker"])
-        self.assertEqual(self.post(f"/deployments/{first_deployment}/assignments", {"house_id": str(self.ids["house"])}).status_code, 302)
+        with self.app.app_context():
+            worker = db.session.get(Worker, self.ids["second_worker"])
+            replacement = Deployment(
+                worker=worker, account_user=worker.user, worker_name=worker.full_name,
+                worker_code=worker.official_worker_id, worker_designation=worker.designation,
+                block_id=self.ids["block"], locality_id=self.ids["locality"],
+                deployment_date=date.today(), team_name="Replacement Team",
+                assigned_by_user_id=User.query.filter_by(username="admin-test").one().id,
+            )
+            db.session.add(replacement)
+            db.session.commit()
+            second_deployment = replacement.id
         self.assertIn(b"active assignment for this date", self.post(f"/deployments/{second_deployment}/assignments", {"house_id": str(self.ids["house"])}, follow_redirects=True).data)
         with self.app.app_context():
             assignment = HouseAssignment.query.filter_by(deployment_id=first_deployment).one()
@@ -152,6 +162,7 @@ class OperationalWorkflowTests(unittest.TestCase):
             "worker_ids": [str(self.ids["first_worker"]), str(self.ids["second_worker"])],
             "block_id": str(self.ids["block"]),
             "locality_id": str(self.ids["locality"]),
+            "team_name": "Team 1",
             "risk_filter": "all",
         })
         self.assertEqual(response.status_code, 302)
@@ -160,9 +171,17 @@ class OperationalWorkflowTests(unittest.TestCase):
             self.assertEqual(len(deployments), 2)
             self.assertEqual(HouseAssignment.query.count(), 2)
             self.assertEqual(sorted(len(item.house_assignments) for item in deployments), [1, 1])
+        dashboard = self.client.get(f"/deployments/?date={date.today().isoformat()}")
+        self.assertIn(b"Team 1", dashboard.data)
         self.assertEqual(self.client.get(
             f"/deployments/eligible-house-count?block_id={self.ids['block']}&locality_id={self.ids['locality']}&deployment_date={date.today().isoformat()}"
         ).get_json(), {"count": 0})
+        self.post("/auth/logout")
+        self.assertEqual(self.login("W001", "Worker-password-123").status_code, 302)
+        mobile = self.client.get("/deployments/mobile")
+        self.assertIn(b"Team 1", mobile.data)
+        self.assertIn(b"W001, W002", mobile.data)
+        self.assertIn(b"My houses", mobile.data)
 
 
 if __name__ == "__main__":
