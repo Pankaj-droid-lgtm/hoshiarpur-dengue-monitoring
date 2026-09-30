@@ -2,6 +2,7 @@ import io
 import tempfile
 import unittest
 from datetime import date
+from openpyxl import Workbook
 
 from sqlalchemy.exc import IntegrityError
 from werkzeug.security import generate_password_hash
@@ -12,6 +13,7 @@ from app.models import (
     Block, Deployment, GpsCapture, House, HouseAssignment, HouseVisit,
     LarvalObservation, Locality, Photo, ReinspectionTask, User, Worker,
 )
+from app.services.historical_import import import_historical_workbook
 
 
 class TestConfig:
@@ -115,8 +117,30 @@ class OperationalWorkflowTests(unittest.TestCase):
         self.post("/auth/logout")
         self.assertEqual(self.login("adc-test", "Adc-password-12345").status_code, 302)
         self.assertEqual(self.client.get("/monitoring/").status_code, 200)
+        self.assertEqual(self.client.get("/monitoring/reports/historical-vbd.csv").status_code, 200)
+        self.assertEqual(self.client.get("/monitoring/reports/historical-field-responses.csv").status_code, 200)
+        self.assertEqual(self.client.get("/monitoring/reports/high-risk-areas.csv").status_code, 200)
         self.assertEqual(self.post("/deployments/new", {}).status_code, 403)
         self.assertEqual(self.post(f"/deployments/{first_deployment}/assignments", {"house_id": str(self.ids["house"])}).status_code, 403)
+
+    def test_historical_import_is_idempotent_and_preserves_operational_data(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Sheet1"
+        sheet.append(["Confirmed dengue cases linelisting - district Hoshiarpur"])
+        sheet.append(["S.N.", "Name of the patient", "Age (in years)", "Sex/ Gender", "Contact number", "Address", "Rural/ Urban", "If Rural name of the block", "If Urban, Name of the Town", "Date of testing"])
+        sheet.append([1, "Case test", 30, "F", None, "Source address", "Rural", "Source Block", None, "01.01.2026"])
+        contents = io.BytesIO()
+        workbook.save(contents)
+        with self.app.app_context():
+            first = import_historical_workbook("Dengue cases test.xlsx", contents.getvalue(), "case_line_list")
+            db.session.commit()
+            second = import_historical_workbook("Dengue cases test.xlsx", contents.getvalue(), "case_line_list")
+            self.assertEqual(first.inserted, 1)
+            self.assertEqual(second.skipped, 1)
+            self.assertEqual(Worker.query.count(), 2)
+            self.assertEqual(HouseVisit.query.count(), 0)
+            self.assertEqual(House.query.count(), 1)
 
 
 if __name__ == "__main__":

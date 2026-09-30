@@ -133,6 +133,37 @@ sudo systemctl start hoshiarpur-dengue-monitoring
 
 Do not commit databases, backups, uploads, or secret files.
 
+## Historical reporting import
+
+Historical workbooks are imported explicitly, never during application startup.
+On EC2, after taking a database backup, use the protected production environment
+and run one command for each reviewed source file:
+
+```sh
+cd ~/hoshiarpur-dengue-monitoring
+source .venv/bin/activate
+flask --app wsgi:app import-historical --source-type case_line_list "/path/Dengue cases till 26.9.26.xlsx"
+flask --app wsgi:app import-historical --source-type staffing_allocation "/path/Breeding checkers - District Hoshiarpur.xlsx"
+flask --app wsgi:app import-historical --source-type block_reporting "/path/Hoshiarpur_Blockwise_VBD 28.9.26.xlsx"
+flask --app wsgi:app import-historical --source-type block_reporting "/path/Hoshiarpur_Blockwise_VBD_WBD_Reporting_Proforma.xlsx"
+```
+
+The import stores the source workbook checksum and skips a repeat of the same
+file. It creates historical source rows and normalized Block/Locality master
+names only where the workbook explicitly provides geography. It never creates
+houses, workers, accounts, deployments, visits, GPS records, or photos.
+
+The high-risk area image should first be reviewed and transcribed into a CSV
+with exactly `area_type,block,locality,positive_case_count` headers. Retain the
+image as the authoritative source, then import the reviewed transcription:
+
+```sh
+flask --app wsgi:app import-high-risk "/path/WhatsApp Image 2026-09-29 at 18.12.53.jpeg" "/path/high-risk-areas-reviewed.csv"
+```
+
+No reference date is assigned to these workbooks or image because their content
+does not explicitly provide one.
+
 ## AWS service management and security
 
 ```sh

@@ -17,6 +17,7 @@ from .models import User
 from .workers import workers_bp
 from .visits import visits_bp
 from .security import csrf_token
+from .services.historical_import import import_high_risk_reference, import_historical_workbook
 
 
 def create_app(config_object=Config) -> Flask:
@@ -66,5 +67,48 @@ def create_app(config_object=Config) -> Flask:
             )
             db.session.commit()
         click.echo("Administrator account created.")
+
+    @app.cli.command("import-historical")
+    @click.argument("workbook", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+    @click.option(
+        "--source-type",
+        type=click.Choice(["case_line_list", "staffing_allocation", "block_reporting"]),
+        required=True,
+    )
+    def import_historical(workbook: Path, source_type: str):
+        """Import one reviewed historical Excel workbook without operational records."""
+        with app.app_context():
+            try:
+                summary = import_historical_workbook(workbook.name, workbook.read_bytes(), source_type)
+                if summary.skipped:
+                    click.echo(f"Skipped: {workbook.name} was already imported.")
+                    return
+                db.session.commit()
+            except Exception as error:
+                db.session.rollback()
+                raise click.ClickException(f"Import failed; no records were committed: {error}") from error
+        click.echo(
+            f"Import complete: {summary.inserted} inserted, {summary.updated} updated, "
+            f"{summary.skipped} skipped, {summary.errors} errors."
+        )
+
+    @app.cli.command("import-high-risk")
+    @click.argument("source_image", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+    @click.argument("areas_csv", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+    def import_high_risk(source_image: Path, areas_csv: Path):
+        """Import a reviewed high-risk area transcription linked to its source image."""
+        with app.app_context():
+            try:
+                summary = import_high_risk_reference(
+                    source_image.name, source_image.read_bytes(), areas_csv.read_bytes()
+                )
+                if summary.skipped:
+                    click.echo(f"Skipped: {source_image.name} was already imported.")
+                    return
+                db.session.commit()
+            except Exception as error:
+                db.session.rollback()
+                raise click.ClickException(f"Import failed; no records were committed: {error}") from error
+        click.echo(f"Import complete: {summary.inserted} inserted, {summary.errors} errors.")
 
     return app
