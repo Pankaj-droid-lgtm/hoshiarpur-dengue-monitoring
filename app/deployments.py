@@ -32,17 +32,16 @@ def deployment_status(deployment: Deployment) -> str:
 def can_access_deployment(deployment: Deployment) -> bool:
     if current_user.role in {"admin", "dc", "adc", "district_officer", "block_officer", "supervisor"}:
         return True
-    if current_user.worker is not None and deployment.worker_id == current_user.worker.id:
-        return True
-    return deployment.worker_id is None and deployment.account_user_id == current_user.id
+    return (
+        (current_user.worker is not None and deployment.worker_id == current_user.worker.id)
+        or deployment.account_user_id == current_user.id
+    )
 
 
 def current_user_deployment_filter():
-    """Use permanent-worker ownership, retaining a narrow legacy fallback."""
+    """Match the worker record and its linked permanent account."""
     worker_id = current_user.worker.id if current_user.worker is not None else -1
-    return ((Deployment.worker_id == worker_id) | (
-        Deployment.worker_id.is_(None) & (Deployment.account_user_id == current_user.id)
-    ))
+    return (Deployment.worker_id == worker_id) | (Deployment.account_user_id == current_user.id)
 
 
 @deployments_bp.get("/")

@@ -154,6 +154,9 @@ class OperationalWorkflowTests(unittest.TestCase):
 
     def test_daily_task_distributes_eligible_houses_to_selected_workers(self):
         self.assertEqual(self.login("admin-test", "Admin-password-123").status_code, 302)
+        task_form = self.client.get("/deployments/new")
+        self.assertIn(b"worker-search", task_form.data)
+        self.assertIn(b"Select all", task_form.data)
         with self.app.app_context():
             db.session.add(House(locality_id=self.ids["locality"], house_code="HP-HOS-000002", address="Second test house"))
             db.session.commit()
@@ -176,12 +179,21 @@ class OperationalWorkflowTests(unittest.TestCase):
         self.assertEqual(self.client.get(
             f"/deployments/eligible-house-count?block_id={self.ids['block']}&locality_id={self.ids['locality']}&deployment_date={date.today().isoformat()}"
         ).get_json(), {"count": 0})
+        with self.app.app_context():
+            worker_deployment = Deployment.query.filter_by(worker_id=self.ids["first_worker"]).one()
+            worker_deployment_id = worker_deployment.id
+            assignment_id = worker_deployment.house_assignments[0].id
+            worker_deployment.worker_id = None
+            db.session.commit()
         self.post("/auth/logout")
         self.assertEqual(self.login("W001", "Worker-password-123").status_code, 302)
         mobile = self.client.get("/deployments/mobile")
         self.assertIn(b"Team 1", mobile.data)
         self.assertIn(b"W001, W002", mobile.data)
         self.assertIn(b"My houses", mobile.data)
+        self.assertIn(b"HOS-TEST-001", mobile.data)
+        self.assertEqual(self.post(f"/deployments/{worker_deployment_id}/start").status_code, 302)
+        self.assertEqual(self.client.get(f"/visits/assignments/{assignment_id}").status_code, 200)
 
 
 if __name__ == "__main__":

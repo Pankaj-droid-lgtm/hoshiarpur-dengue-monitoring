@@ -9,35 +9,29 @@
 <body>
   <header class="site-header">
     <img class="government-logo" src="{{ url_for('static', filename='images/government-logo.jpg') }}" alt="Government of Punjab">
-    <div>
-      <p class="eyebrow">District Administration, Hoshiarpur</p>
-      <h1>Hoshiarpur Dengue Field Surveillance and Monitoring System</h1>
-    </div>
+    <div class="site-title"><p class="eyebrow">District Administration, Hoshiarpur</p><h1>Hoshiarpur Dengue Field Surveillance and Monitoring System</h1></div>
     {% if current_user.is_authenticated %}
+      <input class="nav-toggle" type="checkbox" id="nav-toggle">
+      <label class="nav-menu-button" for="nav-toggle"><span></span><span></span><span></span><b>Menu</b></label>
       <nav aria-label="Main navigation">
         {% if current_user.role == 'field_worker' %}
-          <a href="{{ url_for('deployments.mobile') }}">My field work</a>
+          <a href="{{ url_for('deployments.mobile') }}">Today's work</a>
+          <a href="{{ url_for('deployments.mobile') }}">My tasks</a>
+          <a href="{{ url_for('deployments.mobile_visits') }}">My visits</a>
+          <a href="{{ url_for('deployments.mobile') }}#priority-rechecks">Rechecks</a>
         {% else %}
           <a href="{{ url_for('main.dashboard') }}">Dashboard</a>
-          {% if current_user.role != 'adc' %}<a href="{{ url_for('workers.worker_list') }}">Workers</a>
-          <a href="{{ url_for('geography.index') }}">Geography</a>{% endif %}
+          {% if current_user.role != 'adc' %}<a href="{{ url_for('workers.worker_list') }}">Workers</a><a href="{{ url_for('geography.index') }}">Geography</a>{% endif %}
           <a href="{{ url_for('deployments.dashboard') }}">{{ 'Deployment progress' if current_user.role == 'adc' else 'Deployments' }}</a>
           <a href="{{ url_for('monitoring.dashboard') }}">Monitoring</a>
           <a href="{{ url_for('monitoring.map_view') }}">Map</a>
           {% if current_user.role != 'adc' %}<a href="{{ url_for('imports.historical_import') }}">Historical import</a>{% endif %}
         {% endif %}
-        <form method="post" action="{{ url_for('auth.logout') }}">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button type="submit" class="link-button">Sign out</button>
-        </form>
+        <form method="post" action="{{ url_for('auth.logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit" class="link-button">Sign out</button></form>
       </nav>
     {% endif %}
   </header>
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% for category, message in messages %}
-      <p class="{{ category }}">{{ message }}</p>
-    {% endfor %}
-  {% endwith %}
+  {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<p class="{{ category }}">{{ message }}</p>{% endfor %}{% endwith %}
   <main class="page-content">{% block content %}{% endblock %}</main>
 </body>
 </html>
