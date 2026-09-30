@@ -19,7 +19,7 @@ from .visits import visits_bp
 from .security import csrf_token
 from .services.historical_import import import_high_risk_reference, import_historical_workbook
 from .services.reference_geography import load_reference_geography
-from .services.migrations import add_household_member_column
+from .services.migrations import migrate_field_house_schema
 
 
 def create_app(config_object=Config) -> Flask:
@@ -132,7 +132,19 @@ def create_app(config_object=Config) -> Flask:
         if not database_path or db.engine.url.drivername != "sqlite":
             raise click.ClickException("This migration supports only the configured SQLite database.")
         try:
-            backup_path = add_household_member_column(database_path)
+            backup_path = migrate_field_house_schema(database_path)
+        except Exception as error:
+            raise click.ClickException(f"Migration failed: {error}") from error
+        click.echo(f"Migration complete. Backup created: {backup_path}")
+
+    @app.cli.command("migrate-field-house")
+    def migrate_field_house():
+        """Back up SQLite and add permanent field-house columns safely."""
+        database_path = db.engine.url.database
+        if not database_path or db.engine.url.drivername != "sqlite":
+            raise click.ClickException("This migration supports only the configured SQLite database.")
+        try:
+            backup_path = migrate_field_house_schema(database_path)
         except Exception as error:
             raise click.ClickException(f"Migration failed: {error}") from error
         click.echo(f"Migration complete. Backup created: {backup_path}")

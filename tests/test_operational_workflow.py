@@ -2,7 +2,7 @@ import io
 import sqlite3
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from openpyxl import Workbook
 
 from sqlalchemy.exc import IntegrityError
@@ -51,10 +51,11 @@ class OperationalWorkflowTests(unittest.TestCase):
             db.session.add_all([admin, adc, first_worker, second_worker, block])
             db.session.flush()
             locality = Locality(block=block, name="Bassi Ballo")
+            second_locality = Locality(block=block, name="Janoari")
             house = House(locality=locality, house_code="HOS-TEST-001", address="Test house")
-            db.session.add_all([third_worker, fourth_worker, fifth_worker, locality, house])
+            db.session.add_all([third_worker, fourth_worker, fifth_worker, locality, second_locality, house])
             db.session.commit()
-            self.ids = {"first_worker": first_worker.id, "second_worker": second_worker.id, "third_worker": third_worker.id, "fourth_worker": fourth_worker.id, "fifth_worker": fifth_worker.id, "block": block.id, "locality": locality.id, "house": house.id}
+            self.ids = {"first_worker": first_worker.id, "second_worker": second_worker.id, "third_worker": third_worker.id, "fourth_worker": fourth_worker.id, "fifth_worker": fifth_worker.id, "block": block.id, "locality": locality.id, "second_locality": second_locality.id, "house": house.id}
 
     def tearDown(self):
         with self.app.app_context():
@@ -88,6 +89,7 @@ class OperationalWorkflowTests(unittest.TestCase):
     def test_assignment_isolation_reassignment_and_completion(self):
         self.assertEqual(self.login("admin-test", "Admin-password-123").status_code, 302)
         first_deployment = self.create_deployment(self.ids["first_worker"])
+        self.assertEqual(self.post(f"/deployments/{first_deployment}/assignments", {"house_id": str(self.ids["house"])}).status_code, 302)
         with self.app.app_context():
             worker = db.session.get(Worker, self.ids["second_worker"])
             replacement = Deployment(
@@ -121,14 +123,13 @@ class OperationalWorkflowTests(unittest.TestCase):
         photo = (io.BytesIO(b"\x89PNG\r\n\x1a\nverification-image"), "visit.png", "image/png")
         self.assertEqual(self.post(f"/visits/assignments/{assignment_id}", {
             "visit_outcome": "completed", "containers_checked": "1", "positive_containers": "1",
-            "container_type": "tank", "larvae_found": "yes", "latitude": "31.5",
-            "longitude": "75.9", "gps_accuracy": "5", "remarks": "Test observation",
+            "container_type": "tank", "larvae_found": "yes", "remarks": "Test observation",
             "photo": photo,
         }, content_type="multipart/form-data").status_code, 302)
         with self.app.app_context():
             self.assertEqual(db.session.get(Deployment, second_deployment).status, "completed")
             self.assertEqual(HouseVisit.query.count(), 1)
-            self.assertEqual(GpsCapture.query.count(), 1)
+            self.assertEqual(GpsCapture.query.count(), 0)
             self.assertEqual(Photo.query.count(), 1)
             self.assertEqual(LarvalObservation.query.count(), 1)
             self.assertEqual(ReinspectionTask.query.count(), 1)
@@ -165,32 +166,24 @@ class OperationalWorkflowTests(unittest.TestCase):
         task_form = self.client.get("/deployments/new")
         self.assertIn(b"worker-search", task_form.data)
         self.assertIn(b"Select all", task_form.data)
-        with self.app.app_context():
-            db.session.add(House(locality_id=self.ids["locality"], house_code="HP-HOS-000002", address="Second test house"))
-            db.session.commit()
         response = self.post("/deployments/new", {
             "deployment_date": date.today().isoformat(),
             "worker_ids": [str(self.ids["first_worker"]), str(self.ids["second_worker"])],
             "block_id": str(self.ids["block"]),
             "locality_id": str(self.ids["locality"]),
             "team_name": "Team 1",
-            "risk_filter": "all",
         })
         self.assertEqual(response.status_code, 302)
         with self.app.app_context():
             deployments = Deployment.query.order_by(Deployment.worker_id).all()
             self.assertEqual(len(deployments), 2)
-            self.assertEqual(HouseAssignment.query.count(), 2)
-            self.assertEqual(sorted(len(item.house_assignments) for item in deployments), [1, 1])
+            self.assertEqual(HouseAssignment.query.count(), 0)
+            self.assertEqual(sorted(len(item.house_assignments) for item in deployments), [0, 0])
         dashboard = self.client.get(f"/deployments/?date={date.today().isoformat()}")
         self.assertIn(b"Team 1", dashboard.data)
-        self.assertEqual(self.client.get(
-            f"/deployments/eligible-house-count?block_id={self.ids['block']}&locality_id={self.ids['locality']}&deployment_date={date.today().isoformat()}"
-        ).get_json(), {"count": 0})
         with self.app.app_context():
             worker_deployment = Deployment.query.filter_by(worker_id=self.ids["first_worker"]).one()
             worker_deployment_id = worker_deployment.id
-            assignment_id = worker_deployment.house_assignments[0].id
             worker_deployment.worker_id = None
             db.session.commit()
         self.post("/auth/logout")
@@ -200,8 +193,7 @@ class OperationalWorkflowTests(unittest.TestCase):
         self.assertIn(b"W001, W002", mobile.data)
         self.assertIn(b"My houses", mobile.data)
         self.assertEqual(self.post(f"/deployments/{worker_deployment_id}/start").status_code, 302)
-        self.assertIn(b"HOS-TEST-001", self.client.get("/deployments/mobile").data)
-        self.assertEqual(self.client.get(f"/visits/assignments/{assignment_id}").status_code, 200)
+        self.assertIn(b"Add / Register New House", self.client.get("/deployments/mobile").data)
 
     def test_worker_registers_house_after_starting_zero_house_task(self):
         with self.app.app_context():
@@ -232,8 +224,9 @@ class OperationalWorkflowTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/deployments/{deployment_id}/field-houses/new").status_code, 200)
         response = self.post(f"/deployments/{deployment_id}/field-houses/new", {
             "house_number": "12", "household_member_name": "Test Household",
-            "address": "Field registered address", "latitude": "31.500", "longitude": "75.900",
-        })
+            "address": "Field registered address",
+            "house_photo": (io.BytesIO(b"\x89PNG\r\n\x1a\nverification-image"), "house.png", "image/png"),
+        }, content_type="multipart/form-data")
         self.assertEqual(response.status_code, 302)
         self.assertIn("/visits/assignments/", response.location)
         with self.app.app_context():
@@ -241,7 +234,39 @@ class OperationalWorkflowTests(unittest.TestCase):
             self.assertEqual(house.house_code, "HP-HOS-000001")
             self.assertEqual(house.household_member_name, "Test Household")
             self.assertEqual(house.locality_id, self.ids["locality"])
+            self.assertTrue(house.reference_photo_key)
             self.assertEqual(HouseAssignment.query.one().deployment_id, deployment_id)
+            registered_house_id = house.id
+        duplicate = self.post(f"/deployments/{deployment_id}/field-houses/new", {
+            "house_number": "12", "household_member_name": "Test Household",
+            "address": "Field registered address",
+            "house_photo": (io.BytesIO(b"\x89PNG\r\n\x1a\nverification-image"), "house.png", "image/png"),
+        }, content_type="multipart/form-data", follow_redirects=True)
+        self.assertIn(b"Possible existing house found", duplicate.data)
+        existing = self.post(f"/deployments/{deployment_id}/field-houses", {"house_id": str(registered_house_id)})
+        self.assertIn("/visits/assignments/", existing.location)
+        self.post("/auth/logout")
+        self.assertEqual(self.login("admin-test", "Admin-password-123").status_code, 302)
+        response = self.post("/deployments/new", {
+            "deployment_date": (date.today() + timedelta(days=1)).isoformat(),
+            "worker_ids": [str(self.ids["second_worker"])], "block_id": str(self.ids["block"]),
+            "locality_id": str(self.ids["second_locality"]), "team_name": "Janoari Team",
+        })
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            second_deployment = Deployment.query.filter_by(team_name="Janoari Team").one()
+            second_deployment.status = "started"
+            db.session.commit()
+            second_deployment_id = second_deployment.id
+        self.post("/auth/logout")
+        self.assertEqual(self.login("W002", "Worker-password-234").status_code, 302)
+        different_locality = self.post(f"/deployments/{second_deployment_id}/field-houses/new", {
+            "house_number": "12", "household_member_name": "Test Household", "address": "Janoari address",
+            "house_photo": (io.BytesIO(b"\x89PNG\r\n\x1a\nverification-image"), "house.png", "image/png"),
+        }, content_type="multipart/form-data")
+        self.assertIn("/visits/assignments/", different_locality.location)
+        with self.app.app_context():
+            self.assertEqual(House.query.count(), 2)
 
     def test_household_member_migration_creates_backup(self):
         with tempfile.TemporaryDirectory() as directory:

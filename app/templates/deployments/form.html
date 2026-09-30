@@ -8,22 +8,19 @@
 <section class="worker-selector full-width" aria-labelledby="worker-selector-title"><div class="selector-heading"><div><label id="worker-selector-title" for="worker-search">Select permanent workers</label><span class="form-note" id="worker-count">0 workers selected</span></div><div class="selector-actions"><button type="button" class="button secondary" id="select-all-workers">Select all</button><button type="button" class="button secondary" id="clear-workers">Clear</button></div></div><input id="worker-search" type="search" placeholder="Search Worker ID, name, or designation"><div class="selected-worker-chips" id="selected-worker-chips" aria-live="polite"></div><div class="worker-checklist" id="worker-checklist">{% for worker in workers %}<label class="worker-option" data-search="{{ worker.official_worker_id }} {{ worker.full_name }} {{ worker.designation }}"><input type="checkbox" name="worker_ids" value="{{ worker.id }}"><span><strong>{{ worker.official_worker_id }}</strong> — {{ worker.full_name }}<small>{{ worker.designation }}</small></span></label>{% endfor %}</div></section>
 <label>Block <select name="block_id" id="block_id" required><option value="">Select block</option>{% for block in blocks %}<option value="{{ block.id }}">{{ block.name }}</option>{% endfor %}</select></label>
 <label>Locality/village <select name="locality_id" id="locality_id" disabled required><option value="">Select locality in selected block</option>{% for locality in localities %}<option value="{{ locality.id }}" data-block-id="{{ locality.block_id }}" hidden>{{ locality.block.name }} — {{ locality.name }}</option>{% endfor %}</select></label>
-<label>House workload <select name="risk_filter" id="risk_filter"><option value="all">All eligible houses</option><option value="high_risk">High-risk localities only</option><option value="normal">Other eligible houses</option></select><span class="form-note" id="eligible-house-count">Select date and block to calculate eligible houses.</span></label>
 <label>Priority <select name="priority"><option value="normal">Normal</option><option value="high">High</option><option value="priority_recheck">Priority recheck</option></select></label>
-<label class="full-width">Notes <textarea name="notes" rows="3"></textarea></label><p class="form-note full-width">All selected workers are assigned to the same team, block, and locality. Eligible houses are distributed between members and cannot come from another locality.</p>
+<label class="full-width">Notes <textarea name="notes" rows="3"></textarea></label><p class="form-note full-width">House details are collected by field workers after reaching the assigned locality.</p>
 <div class="form-actions"><button type="submit" {% if not blocks or not workers %}disabled{% endif %}>Assign task</button><a class="button secondary" href="{{ url_for('deployments.dashboard') }}">Cancel</a></div></form>
 <script>
   const form = document.getElementById("team-task-form");
   const blockSelect = document.getElementById("block_id");
   const localitySelect = document.getElementById("locality_id");
   const dateInput = document.querySelector('[name="deployment_date"]');
-  const riskFilter = document.getElementById("risk_filter");
   const workerSearch = document.getElementById("worker-search");
   const workerOptions = [...document.querySelectorAll(".worker-option")];
   const workerChecks = [...document.querySelectorAll('[name="worker_ids"]')];
   const workerCount = document.getElementById("worker-count");
   const chips = document.getElementById("selected-worker-chips");
-  const houseCount = document.getElementById("eligible-house-count");
 
   function syncWorkers() {
     const selected = workerChecks.filter((input) => input.checked);
@@ -44,27 +41,12 @@
     localitySelect.value = "";
     localitySelect.disabled = !selectedBlockId;
     [...localitySelect.options].forEach((option) => { option.hidden = Boolean(option.value) && option.dataset.blockId !== selectedBlockId; });
-    updateEligibleHouseCount();
-  }
-  async function updateEligibleHouseCount() {
-    if (!blockSelect.value || !localitySelect.value || !dateInput.value) {
-      houseCount.textContent = "Select date, block, and locality to calculate eligible houses.";
-      return;
-    }
-    const params = new URLSearchParams({block_id: blockSelect.value, locality_id: localitySelect.value, deployment_date: dateInput.value, risk_filter: riskFilter.value});
-    const response = await fetch(`{{ url_for('deployments.eligible_house_count') }}?${params}`);
-    if (!response.ok) return;
-    const result = await response.json();
-    houseCount.textContent = result.count ? `${result.count} eligible house${result.count === 1 ? "" : "s"} will be distributed.` : "No eligible houses found for this block/locality/filter.";
   }
   workerSearch.addEventListener("input", filterWorkers);
   workerChecks.forEach((input) => input.addEventListener("change", syncWorkers));
   document.getElementById("select-all-workers").addEventListener("click", () => { workerChecks.forEach((input) => { input.checked = true; }); syncWorkers(); });
   document.getElementById("clear-workers").addEventListener("click", () => { workerChecks.forEach((input) => { input.checked = false; }); syncWorkers(); });
   blockSelect.addEventListener("change", filterLocalities);
-  localitySelect.addEventListener("change", updateEligibleHouseCount);
-  dateInput.addEventListener("change", updateEligibleHouseCount);
-  riskFilter.addEventListener("change", updateEligibleHouseCount);
   window.addEventListener("pageshow", (event) => { if (event.persisted) { form.reset(); syncWorkers(); filterLocalities(); } });
   filterLocalities();
   syncWorkers();

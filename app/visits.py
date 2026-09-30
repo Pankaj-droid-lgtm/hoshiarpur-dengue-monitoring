@@ -8,7 +8,7 @@ from werkzeug.utils import secure_filename
 
 from .deployments import can_access_deployment
 from .extensions import db
-from .models import GpsCapture, HouseAssignment, HouseVisit, LarvalObservation, Photo, ReinspectionTask
+from .models import HouseAssignment, HouseVisit, LarvalObservation, Photo, ReinspectionTask
 from .security import validate_csrf
 from .services.audit import log_change
 
@@ -47,7 +47,6 @@ def inspect_house(assignment_id: int):
         for container_type, larvae in zip(request.form.getlist("container_type"), request.form.getlist("larvae_found")):
             if container_type.strip():
                 db.session.add(LarvalObservation(visit=visit, container_type=container_type.strip(), larvae_found=larvae == "yes"))
-        capture_gps(visit)
         save_photo(visit)
         assignment.completed_at = visit.visited_at
         update_deployment_completion(assignment.deployment, visit.visited_at)
@@ -72,13 +71,6 @@ def photo_file(photo_id: int):
     if Path(photo.storage_key).name != photo.storage_key:
         abort(404)
     return send_from_directory(upload_directory(), photo.storage_key)
-
-
-def capture_gps(visit: HouseVisit) -> None:
-    latitude = optional_float(request.form.get("latitude"))
-    longitude = optional_float(request.form.get("longitude"))
-    if latitude is not None and longitude is not None and -90 <= latitude <= 90 and -180 <= longitude <= 180:
-        db.session.add(GpsCapture(visit=visit, latitude=latitude, longitude=longitude, accuracy_metres=optional_float(request.form.get("gps_accuracy")), captured_at=datetime.utcnow()))
 
 
 def update_deployment_completion(deployment, completed_at: datetime) -> None:
@@ -127,10 +119,3 @@ def number(value: str | None) -> int:
         return max(int(value or 0), 0)
     except ValueError:
         return 0
-
-
-def optional_float(value: str | None) -> float | None:
-    try:
-        return float(value) if value else None
-    except ValueError:
-        return None

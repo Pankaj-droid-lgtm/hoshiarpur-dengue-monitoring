@@ -122,6 +122,9 @@ class House(TimestampMixin, db.Model):
     house_code: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
     house_number: Mapped[str | None] = mapped_column(String(80))
     household_member_name: Mapped[str | None] = mapped_column(String(160))
+    reference_photo_key: Mapped[str | None] = mapped_column(String(255), unique=True)
+    reference_photo_content_type: Mapped[str | None] = mapped_column(String(100))
+    registered_by_worker_id: Mapped[int | None] = mapped_column(ForeignKey("workers.id"))
     address: Mapped[str] = mapped_column(Text, nullable=False)
     latitude: Mapped[float | None]
     longitude: Mapped[float | None]

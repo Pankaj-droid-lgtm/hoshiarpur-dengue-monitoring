@@ -1,7 +1,10 @@
 from datetime import date, datetime
+from pathlib import Path
+from uuid import uuid4
 
-from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, abort, current_app, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from werkzeug.utils import secure_filename
 
 from .extensions import db
 from .models import (
@@ -87,8 +90,6 @@ def create_deployment():
         elif workers_with_active_task(worker_ids, scheduled_date):
             flash("One or more selected workers already have a house-assigned team task for this date.", "error")
         else:
-            task_filter = request.form.get("risk_filter", "all")
-            houses = eligible_task_houses(block, locality, scheduled_date, task_filter)
             deployments = []
             for worker in sorted(workers, key=lambda item: item.official_worker_id):
                 deployment = Deployment(
@@ -111,12 +112,10 @@ def create_deployment():
                 db.session.add(deployment)
                 deployments.append(deployment)
             db.session.flush()
-            for index, house in enumerate(houses):
-                db.session.add(HouseAssignment(deployment=deployments[index % len(deployments)], house=house, priority="priority_recheck" if house.id in high_risk_house_ids(block, locality) else deployments[index % len(deployments)].priority))
             for deployment in deployments:
-                log_change("create", "deployment", deployment.id, after={"date": str(scheduled_date), "worker_id": deployment.worker_id, "block_id": block.id, "risk_filter": task_filter})
+                log_change("create", "deployment", deployment.id, after={"date": str(scheduled_date), "worker_id": deployment.worker_id, "block_id": block.id})
             db.session.commit()
-            flash(f"Task assigned to {len(deployments)} workers with {len(houses)} existing houses distributed. Workers can register additional houses in the field.", "success")
+            flash(f"Task assigned to {len(deployments)} workers. House details are collected by field workers after reaching the assigned locality.", "success")
             return redirect(url_for("deployments.team_detail", deployment_id=deployments[0].id))
     return render_template(
         "deployments/form.html",
@@ -125,23 +124,6 @@ def create_deployment():
         high_risk_house_ids=high_risk_house_ids(),
         today=date.today(),
     )
-
-
-@deployments_bp.get("/eligible-house-count")
-@login_required
-def eligible_house_count():
-    """Return current assignment capacity for the daily deployment form."""
-    require_operational_management_access()
-    block = db.session.get(Block, optional_int(request.args.get("block_id")))
-    locality_id = request.args.get("locality_id", "").strip()
-    locality = db.session.get(Locality, optional_int(locality_id)) if locality_id else None
-    scheduled_date = parse_date(request.args.get("deployment_date"))
-    if not block or not scheduled_date or (locality and locality.block_id != block.id):
-        return jsonify(count=0)
-    if not locality or not is_approved_location(block, locality):
-        return jsonify(count=0)
-    houses = eligible_task_houses(block, locality, scheduled_date, request.args.get("risk_filter", "all"))
-    return jsonify(count=len(houses))
 
 
 @deployments_bp.get("/<int:deployment_id>")
@@ -336,25 +318,28 @@ def register_field_house(deployment_id: int):
         household_member_name = request.form.get("household_member_name", "").strip()
         address = request.form.get("address", "").strip()
         house_code = request.form.get("house_code", "").strip() or next_house_code()
-        latitude = optional_float(request.form.get("latitude"))
-        longitude = optional_float(request.form.get("longitude"))
         if not house_number or not household_member_name or not address:
             flash("House number, household member name, and address are required.", "error")
-        elif latitude is None or longitude is None or not valid_coordinates(latitude, longitude):
-            flash("Capture valid GPS latitude and longitude before registering the house.", "error")
         elif House.query.filter_by(house_code=house_code).first():
             flash("That permanent House ID already exists.", "error")
-        elif House.query.filter_by(locality_id=deployment.locality_id, house_number=house_number).first():
-            flash("A house with this house number is already registered in the assigned locality.", "error")
+        elif possible_house := House.query.filter(
+            House.locality_id == deployment.locality_id,
+            House.house_number == house_number,
+            House.household_member_name.ilike(household_member_name),
+        ).first():
+            flash("Possible existing house found. Open the existing house instead of creating a duplicate.", "error")
+            return render_template("deployments/field_house_form.html", deployment=deployment, possible_house=possible_house)
         else:
+            photo_key, photo_type = save_reference_photo()
             house = House(
                 locality_id=deployment.locality_id,
                 house_code=house_code,
                 house_number=house_number,
                 household_member_name=household_member_name,
                 address=address,
-                latitude=latitude,
-                longitude=longitude,
+                reference_photo_key=photo_key,
+                reference_photo_content_type=photo_type,
+                registered_by_worker_id=deployment.worker_id,
             )
             assignment = HouseAssignment(deployment=deployment, house=house, priority=deployment.priority)
             db.session.add_all([house, assignment])
@@ -363,8 +348,39 @@ def register_field_house(deployment_id: int):
                 deployment.status = "in_progress"
             log_change("register_field_house", "house", house.id, after={"house_code": house.house_code, "deployment_id": deployment.id})
             db.session.commit()
+            flash(f"House registered successfully: {house.house_code}", "success")
             return redirect(url_for("visits.inspect_house", assignment_id=assignment.id))
     return render_template("deployments/field_house_form.html", deployment=deployment)
+
+
+@deployments_bp.route("/<int:deployment_id>/field-houses", methods=["GET", "POST"])
+@login_required
+def find_field_house(deployment_id: int):
+    deployment = db.get_or_404(Deployment, deployment_id)
+    if not can_access_deployment(deployment) or current_user.role != "field_worker" or deployment.status not in {"started", "in_progress"}:
+        abort(403)
+    query = request.values.get("q", "").strip()
+    houses = []
+    if query:
+        pattern = f"%{query}%"
+        houses = House.query.filter(
+            House.locality_id == deployment.locality_id,
+            (House.house_code.ilike(pattern)) | (House.house_number.ilike(pattern)) | (House.household_member_name.ilike(pattern)),
+        ).order_by(House.house_code).limit(50).all()
+    if request.method == "POST":
+        house = db.session.get(House, optional_int(request.form.get("house_id")))
+        if not house or house.locality_id != deployment.locality_id:
+            abort(400)
+        assignment = HouseAssignment.query.filter_by(deployment_id=deployment.id, house_id=house.id).first()
+        if assignment is None:
+            if active_assignment_for_date(house.id, deployment.deployment_date):
+                flash("This house is already assigned to another worker today.", "error")
+                return redirect(url_for("deployments.find_field_house", deployment_id=deployment.id, q=query))
+            assignment = HouseAssignment(deployment=deployment, house=house, priority=deployment.priority)
+            db.session.add(assignment)
+            db.session.commit()
+        return redirect(url_for("visits.inspect_house", assignment_id=assignment.id))
+    return render_template("deployments/field_house_search.html", deployment=deployment, houses=houses, query=query)
 
 
 def active_workers() -> list[Worker]:
@@ -593,3 +609,22 @@ def next_house_code() -> str:
     while House.query.filter_by(house_code=f"HP-HOS-{sequence:06d}").first():
         sequence += 1
     return f"HP-HOS-{sequence:06d}"
+
+
+def save_reference_photo() -> tuple[str, str]:
+    upload = request.files.get("house_photo")
+    if not upload or not upload.filename:
+        abort(400, "A house photo is required.")
+    extension = Path(secure_filename(upload.filename)).suffix.lower()
+    if upload.mimetype not in {"image/jpeg", "image/png"} or extension not in {".jpg", ".jpeg", ".png"}:
+        abort(400, "The house photo must be a JPEG or PNG image.")
+    signature = upload.stream.read(16)
+    upload.stream.seek(0)
+    valid_signature = signature.startswith(b"\x89PNG\r\n\x1a\n") if extension == ".png" else signature.startswith(b"\xff\xd8\xff")
+    if not valid_signature:
+        abort(400, "The uploaded house photo is not a valid image.")
+    directory = Path(current_app.config["UPLOAD_DIRECTORY"]).resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    filename = f"house-{uuid4().hex}{extension}"
+    upload.save(directory / filename)
+    return filename, upload.mimetype

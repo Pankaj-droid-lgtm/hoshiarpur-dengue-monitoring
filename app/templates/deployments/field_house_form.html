@@ -2,13 +2,11 @@
 {% block title %}Register field house{% endblock %}
 {% block content %}
 <div class="page-heading"><div><p class="eyebrow">{{ deployment.team_name }}</p><h2>Add / Register New House</h2><p>{{ deployment.block.name }} → {{ deployment.locality.name }}</p></div></div>
-<form method="post" class="panel form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-<label>Permanent House ID <input name="house_code" placeholder="Generated automatically if left blank"><span class="form-note">The ID is permanent and must be reused for future visits.</span></label>
-<label>House No. <input name="house_number" required></label>
-<label>House Member / Head of Household <input name="household_member_name" required></label>
+{% if possible_house %}<section class="notice"><strong>Possible existing house found.</strong><p>{{ possible_house.house_code }} · House {{ possible_house.house_number }} · {{ possible_house.household_member_name }}</p><form method="post" action="{{ url_for('deployments.find_field_house', deployment_id=deployment.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="house_id" value="{{ possible_house.id }}"><button type="submit">Open existing house</button></form></section>{% endif %}
+<form method="post" enctype="multipart/form-data" class="panel form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<label>House No. <input name="house_number" required></label><label>Head of Household / House Member Name <input name="household_member_name" required></label>
+<label class="full-width">House Photo <input name="house_photo" type="file" accept="image/jpeg,image/png" capture="environment" required><span class="form-note">A permanent reference photo is required for first registration.</span></label>
 <label class="full-width">Address / house details <textarea name="address" required></textarea></label>
-<input name="latitude" type="hidden"><input name="longitude" type="hidden"><button type="button" id="capture-gps">Capture GPS</button><span id="gps-status" class="form-note">GPS capture is required before saving.</span>
-<div class="form-actions"><button type="submit">Save house and start visit</button><a class="button secondary" href="{{ url_for('deployments.mobile') }}">Back to task</a></div>
+<div class="form-actions"><button type="submit">Save house</button><a class="button secondary" href="{{ url_for('deployments.mobile') }}">Back to task</a></div>
 </form>
-<script>document.getElementById('capture-gps').onclick=()=>navigator.geolocation?navigator.geolocation.getCurrentPosition(p=>{document.querySelector('[name=latitude]').value=p.coords.latitude;document.querySelector('[name=longitude]').value=p.coords.longitude;document.getElementById('gps-status').textContent='GPS captured.'},()=>document.getElementById('gps-status').textContent='GPS unavailable; complete address details and try again if needed.'):document.getElementById('gps-status').textContent='GPS is not supported by this browser.';</script>
 {% endblock %}
