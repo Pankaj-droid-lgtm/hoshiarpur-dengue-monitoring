@@ -79,6 +79,10 @@ installation.
 Use a managed database URL for shared/cloud deployments. The application does
 not automatically import Excel workbooks or create operational records.
 
+See [DELIVERY.md](DELIVERY.md) for the operational handover guide, authoritative
+CSV data format, backup/restore procedure, roles, and credential handover
+process. The linked credential template is deliberately non-secret.
+
 The unauthenticated health endpoint is `GET /health` and returns only
 `{"status":"ok"}`.
 

@@ -1,4 +1,4 @@
-import os
+import io
 import tempfile
 import unittest
 from datetime import date
@@ -8,7 +8,10 @@ from werkzeug.security import generate_password_hash
 
 from app import create_app
 from app.extensions import db
-from app.models import Block, Deployment, House, HouseAssignment, Locality, User, Worker
+from app.models import (
+    Block, Deployment, GpsCapture, House, HouseAssignment, HouseVisit,
+    LarvalObservation, Locality, Photo, ReinspectionTask, User, Worker,
+)
 
 
 class TestConfig:
@@ -95,9 +98,20 @@ class OperationalWorkflowTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/visits/assignments/{assignment_id}").status_code, 403)
         self.post("/auth/logout")
         self.assertEqual(self.login("W002", "Worker-password-234").status_code, 302)
-        self.assertEqual(self.post(f"/visits/assignments/{assignment_id}", {"visit_outcome": "completed", "containers_checked": "1", "positive_containers": "0"}).status_code, 302)
+        photo = (io.BytesIO(b"\x89PNG\r\n\x1a\nverification-image"), "visit.png", "image/png")
+        self.assertEqual(self.post(f"/visits/assignments/{assignment_id}", {
+            "visit_outcome": "completed", "containers_checked": "1", "positive_containers": "1",
+            "container_type": "tank", "larvae_found": "yes", "latitude": "31.5",
+            "longitude": "75.9", "gps_accuracy": "5", "remarks": "Test observation",
+            "photo": photo,
+        }, content_type="multipart/form-data").status_code, 302)
         with self.app.app_context():
             self.assertEqual(db.session.get(Deployment, second_deployment).status, "completed")
+            self.assertEqual(HouseVisit.query.count(), 1)
+            self.assertEqual(GpsCapture.query.count(), 1)
+            self.assertEqual(Photo.query.count(), 1)
+            self.assertEqual(LarvalObservation.query.count(), 1)
+            self.assertEqual(ReinspectionTask.query.count(), 1)
         self.post("/auth/logout")
         self.assertEqual(self.login("adc-test", "Adc-password-12345").status_code, 302)
         self.assertEqual(self.client.get("/monitoring/").status_code, 200)
