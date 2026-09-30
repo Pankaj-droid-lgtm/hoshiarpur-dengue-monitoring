@@ -39,16 +39,22 @@ class OperationalWorkflowTests(unittest.TestCase):
             adc = User(username="adc-test", password_hash=generate_password_hash("Adc-password-12345"), role="adc")
             first_account = User(username="W001", password_hash=generate_password_hash("Worker-password-123"), role="field_worker")
             second_account = User(username="W002", password_hash=generate_password_hash("Worker-password-234"), role="field_worker")
+            third_account = User(username="W003", password_hash=generate_password_hash("Worker-password-345"), role="field_worker")
+            fourth_account = User(username="W004", password_hash=generate_password_hash("Worker-password-456"), role="field_worker")
+            fifth_account = User(username="W005", password_hash=generate_password_hash("Worker-password-567"), role="field_worker")
             first_worker = Worker(official_worker_id="W001", full_name="Test Worker One", designation="Field Worker", user=first_account)
             second_worker = Worker(official_worker_id="W002", full_name="Test Worker Two", designation="Field Worker", user=second_account)
+            third_worker = Worker(official_worker_id="W003", full_name="Test Worker Three", designation="Field Worker", user=third_account)
+            fourth_worker = Worker(official_worker_id="W004", full_name="Test Worker Four", designation="Field Worker", user=fourth_account)
+            fifth_worker = Worker(official_worker_id="W005", full_name="Test Worker Five", designation="Field Worker", user=fifth_account)
             block = Block(name="Bhunga")
             db.session.add_all([admin, adc, first_worker, second_worker, block])
             db.session.flush()
-            locality = Locality(block=block, name="Bhunga")
+            locality = Locality(block=block, name="Bassi Ballo")
             house = House(locality=locality, house_code="HOS-TEST-001", address="Test house")
-            db.session.add_all([locality, house])
+            db.session.add_all([third_worker, fourth_worker, fifth_worker, locality, house])
             db.session.commit()
-            self.ids = {"first_worker": first_worker.id, "second_worker": second_worker.id, "block": block.id, "locality": locality.id, "house": house.id}
+            self.ids = {"first_worker": first_worker.id, "second_worker": second_worker.id, "third_worker": third_worker.id, "fourth_worker": fourth_worker.id, "fifth_worker": fifth_worker.id, "block": block.id, "locality": locality.id, "house": house.id}
 
     def tearDown(self):
         with self.app.app_context():
@@ -150,7 +156,7 @@ class OperationalWorkflowTests(unittest.TestCase):
             second = import_historical_workbook("Dengue cases test.xlsx", contents.getvalue(), "case_line_list")
             self.assertEqual(first.inserted, 1)
             self.assertEqual(second.skipped, 1)
-            self.assertEqual(Worker.query.count(), 2)
+            self.assertEqual(Worker.query.count(), 5)
             self.assertEqual(HouseVisit.query.count(), 0)
             self.assertEqual(House.query.count(), 1)
 
@@ -204,18 +210,24 @@ class OperationalWorkflowTests(unittest.TestCase):
         self.assertEqual(self.login("admin-test", "Admin-password-123").status_code, 302)
         response = self.post("/deployments/new", {
             "deployment_date": date.today().isoformat(),
-            "worker_ids": [str(self.ids["first_worker"])],
+            "worker_ids": [str(self.ids["first_worker"]), str(self.ids["second_worker"]), str(self.ids["third_worker"]), str(self.ids["fourth_worker"]), str(self.ids["fifth_worker"])],
             "block_id": str(self.ids["block"]),
             "locality_id": str(self.ids["locality"]),
-            "team_name": "Field Registration Team",
+            "team_name": "Team 1",
         })
         self.assertEqual(response.status_code, 302)
         with self.app.app_context():
-            deployment = Deployment.query.one()
-            self.assertEqual(len(deployment.house_assignments), 0)
-            deployment_id = deployment.id
+            deployments = Deployment.query.order_by(Deployment.worker_code).all()
+            self.assertEqual(len(deployments), 5)
+            self.assertTrue(all(len(item.house_assignments) == 0 for item in deployments))
+            deployment_id = deployments[0].id
         self.post("/auth/logout")
         self.assertEqual(self.login("W001", "Worker-password-123").status_code, 302)
+        mobile = self.client.get("/deployments/mobile")
+        self.assertIn(b"Team 1", mobile.data)
+        self.assertIn(b"Bhunga", mobile.data)
+        self.assertIn(b"Bassi Ballo", mobile.data)
+        self.assertIn(b"W001, W002, W003, W004, W005", mobile.data)
         self.assertEqual(self.post(f"/deployments/{deployment_id}/start").status_code, 302)
         self.assertEqual(self.client.get(f"/deployments/{deployment_id}/field-houses/new").status_code, 200)
         response = self.post(f"/deployments/{deployment_id}/field-houses/new", {

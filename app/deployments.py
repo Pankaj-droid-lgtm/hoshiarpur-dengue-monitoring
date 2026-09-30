@@ -340,8 +340,8 @@ def register_field_house(deployment_id: int):
         longitude = optional_float(request.form.get("longitude"))
         if not house_number or not household_member_name or not address:
             flash("House number, household member name, and address are required.", "error")
-        elif (latitude is None) != (longitude is None) or not valid_coordinates(latitude, longitude):
-            flash("Capture both valid latitude and longitude, or leave both blank.", "error")
+        elif latitude is None or longitude is None or not valid_coordinates(latitude, longitude):
+            flash("Capture valid GPS latitude and longitude before registering the house.", "error")
         elif House.query.filter_by(house_code=house_code).first():
             flash("That permanent House ID already exists.", "error")
         elif House.query.filter_by(locality_id=deployment.locality_id, house_number=house_number).first():

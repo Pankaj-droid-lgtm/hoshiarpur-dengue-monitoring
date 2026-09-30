@@ -7,7 +7,7 @@
 <label>House No. <input name="house_number" required></label>
 <label>House Member / Head of Household <input name="household_member_name" required></label>
 <label class="full-width">Address / house details <textarea name="address" required></textarea></label>
-<input name="latitude" type="hidden"><input name="longitude" type="hidden"><button type="button" id="capture-gps">Capture GPS</button><span id="gps-status" class="form-note">GPS is optional.</span>
+<input name="latitude" type="hidden"><input name="longitude" type="hidden"><button type="button" id="capture-gps">Capture GPS</button><span id="gps-status" class="form-note">GPS capture is required before saving.</span>
 <div class="form-actions"><button type="submit">Save house and start visit</button><a class="button secondary" href="{{ url_for('deployments.mobile') }}">Back to task</a></div>
 </form>
 <script>document.getElementById('capture-gps').onclick=()=>navigator.geolocation?navigator.geolocation.getCurrentPosition(p=>{document.querySelector('[name=latitude]').value=p.coords.latitude;document.querySelector('[name=longitude]').value=p.coords.longitude;document.getElementById('gps-status').textContent='GPS captured.'},()=>document.getElementById('gps-status').textContent='GPS unavailable; complete address details and try again if needed.'):document.getElementById('gps-status').textContent='GPS is not supported by this browser.';</script>
