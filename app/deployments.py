@@ -10,6 +10,7 @@ from .models import (
 )
 from .security import validate_csrf
 from .services.audit import log_change
+from .services.reference_geography import REFERENCE_GEOGRAPHY
 from .services.permissions import (
     has_operational_management_access,
     require_management_access,
@@ -22,6 +23,8 @@ DEPLOYMENT_STATUSES = ("assigned", "started", "in_progress", "completed", "overd
 
 
 def deployment_status(deployment: Deployment) -> str:
+    if not deployment.house_assignments:
+        return "no_houses"
     if deployment.status in {"completed", "cancelled"}:
         return deployment.status
     if deployment.deployment_date < date.today():
@@ -49,7 +52,10 @@ def current_user_deployment_filter():
 def dashboard():
     require_management_access()
     selected_date = parse_date(request.args.get("date")) or date.today()
-    deployments = Deployment.query.filter_by(deployment_date=selected_date).order_by(Deployment.id).all()
+    deployments = [
+        item for item in Deployment.query.filter_by(deployment_date=selected_date).order_by(Deployment.id).all()
+        if is_valid_team_task(item)
+    ]
     return render_template(
         "deployments/dashboard.html", team_tasks=build_team_tasks(deployments), selected_date=selected_date,
         deployment_status=deployment_status
@@ -76,8 +82,12 @@ def create_deployment():
             flash("Date, team name, active workers, block, and locality are required.", "error")
         elif locality and locality.block_id != block.id:
             flash("The locality does not belong to the selected block.", "error")
-        elif Deployment.query.filter_by(deployment_date=scheduled_date, team_name=team_name).first():
+        elif not is_approved_location(block, locality):
+            flash("Select a block and locality from the approved Hoshiarpur reference geography.", "error")
+        elif existing_valid_team_name(team_name, scheduled_date):
             flash("That team name is already assigned for this date.", "error")
+        elif workers_with_active_task(worker_ids, scheduled_date):
+            flash("One or more selected workers already have a house-assigned team task for this date.", "error")
         else:
             task_filter = request.form.get("risk_filter", "all")
             houses = eligible_task_houses(block, locality, scheduled_date, task_filter)
@@ -85,8 +95,7 @@ def create_deployment():
                 flash("No eligible houses are available for this team task.", "error")
                 return render_template(
                     "deployments/form.html", workers=active_workers(),
-                    blocks=Block.query.order_by(Block.name).all(),
-                    localities=Locality.query.order_by(Locality.block_id, Locality.name).all(),
+                    blocks=approved_blocks(), localities=approved_localities(),
                     high_risk_house_ids=high_risk_house_ids(), today=date.today(),
                 )
             deployments = []
@@ -121,8 +130,7 @@ def create_deployment():
     return render_template(
         "deployments/form.html",
         workers=active_workers(),
-        blocks=Block.query.order_by(Block.name).all(),
-        localities=Locality.query.order_by(Locality.block_id, Locality.name).all(),
+        blocks=approved_blocks(), localities=approved_localities(),
         high_risk_house_ids=high_risk_house_ids(),
         today=date.today(),
     )
@@ -138,6 +146,8 @@ def eligible_house_count():
     locality = db.session.get(Locality, optional_int(locality_id)) if locality_id else None
     scheduled_date = parse_date(request.args.get("deployment_date"))
     if not block or not scheduled_date or (locality and locality.block_id != block.id):
+        return jsonify(count=0)
+    if not locality or not is_approved_location(block, locality):
         return jsonify(count=0)
     houses = eligible_task_houses(block, locality, scheduled_date, request.args.get("risk_filter", "all"))
     return jsonify(count=len(houses))
@@ -190,10 +200,16 @@ def start_deployment(deployment_id: int):
         abort(403)
     if current_user.role != "field_worker" and not has_operational_management_access():
         abort(403)
-    if deployment.status == "assigned":
-        deployment.status = "started"
-        deployment.started_at = datetime.utcnow()
-        log_change("start", "deployment", deployment.id, after={"status": "started"})
+    owned_deployments = [item for item in team_deployments(deployment) if can_access_deployment(item)]
+    deployable = [item for item in owned_deployments if item.house_assignments]
+    if not deployable:
+        flash("This task has no assigned houses and cannot be started.", "error")
+    else:
+        for item in deployable:
+            if item.status == "assigned":
+                item.status = "started"
+                item.started_at = datetime.utcnow()
+                log_change("start", "deployment", item.id, after={"status": "started"})
         db.session.commit()
     return redirect(url_for("deployments.mobile"))
 
@@ -282,7 +298,8 @@ def mobile():
         Deployment.deployment_date == date.today(),
         current_user_deployment_filter(),
         Deployment.status != "cancelled",
-    ).all()
+    ).order_by(Deployment.id).all()
+    deployments = [item for item in deployments if is_valid_team_task(item)]
     priority_rechecks = 0
     if deployments:
         priority_rechecks = ReinspectionTask.query.join(House).join(HouseAssignment).join(Deployment).filter(
@@ -290,15 +307,8 @@ def mobile():
             Deployment.deployment_date == date.today(),
             ReinspectionTask.status == "open",
         ).distinct().count()
-    tasks = []
-    statuses = house_statuses(assignment.house for deployment in deployments for assignment in deployment.house_assignments)
-    for deployment in deployments:
-        members = team_deployments(deployment)
-        tasks.append({
-            "deployment": deployment,
-            "members": members,
-            "member_codes": ", ".join(item.worker_code or item.worker_name for item in members),
-        })
+    tasks = build_worker_team_tasks(deployments)
+    statuses = house_statuses(assignment.house for task in tasks for assignment in task["assignments"])
     return render_template("deployments/mobile.html", tasks=tasks, priority_rechecks=priority_rechecks, today=date.today(), deployment_status=deployment_status, house_statuses=statuses)
 
 
@@ -328,6 +338,52 @@ def active_workers() -> list[Worker]:
     return Worker.query.filter_by(is_active=True).order_by(Worker.full_name).all()
 
 
+def approved_blocks() -> list[Block]:
+    names = [item[0] for item in REFERENCE_GEOGRAPHY]
+    return Block.query.filter(Block.name.in_(names)).order_by(Block.name).all()
+
+
+def approved_localities() -> list[Locality]:
+    approved_pairs = {(block_name, locality_name) for block_name, _, names in REFERENCE_GEOGRAPHY for locality_name in names}
+    return [
+        locality for locality in Locality.query.join(Block).order_by(Block.name, Locality.name).all()
+        if (locality.block.name, locality.name) in approved_pairs
+    ]
+
+
+def is_approved_location(block: Block | None, locality: Locality | None) -> bool:
+    if not block or not locality:
+        return False
+    return any(block.name == block_name and locality.name in locality_names for block_name, _, locality_names in REFERENCE_GEOGRAPHY)
+
+
+def is_valid_team_task(deployment: Deployment) -> bool:
+    return bool(
+        deployment.team_name
+        and deployment.locality_id
+        and deployment.house_assignments
+        and is_approved_location(deployment.block, deployment.locality)
+    )
+
+
+def workers_with_active_task(worker_ids: list[int], deployment_date: date) -> bool:
+    if not worker_ids:
+        return False
+    deployments = Deployment.query.filter(
+        Deployment.deployment_date == deployment_date,
+        Deployment.worker_id.in_(worker_ids),
+        Deployment.status.notin_(["completed", "cancelled"]),
+    ).all()
+    return any(is_valid_team_task(item) for item in deployments)
+
+
+def existing_valid_team_name(team_name: str, deployment_date: date) -> bool:
+    deployments = Deployment.query.filter_by(
+        deployment_date=deployment_date, team_name=team_name
+    ).all()
+    return any(is_valid_team_task(item) for item in deployments)
+
+
 def team_deployments(deployment: Deployment) -> list[Deployment]:
     """Return the worker deployments that form one daily team task."""
     if not deployment.team_name:
@@ -338,6 +394,38 @@ def team_deployments(deployment: Deployment) -> list[Deployment]:
         block_id=deployment.block_id,
         locality_id=deployment.locality_id,
     ).order_by(Deployment.worker_code, Deployment.id).all()
+
+
+def build_worker_team_tasks(deployments: list[Deployment]) -> list[dict]:
+    """Present all of a worker's deployment rows for one team as a single field task."""
+    groups = {}
+    for deployment in deployments:
+        key = (deployment.team_name, deployment.block_id, deployment.locality_id)
+        groups.setdefault(key, []).append(deployment)
+    tasks = []
+    for own_deployments in groups.values():
+        team_members = team_deployments(own_deployments[0])
+        assignments = sorted(
+            (assignment for item in own_deployments for assignment in item.house_assignments),
+            key=lambda item: item.house.house_code,
+        )
+        member_codes = []
+        for member in team_members:
+            code = member.worker_code or member.worker_name
+            if code not in member_codes:
+                member_codes.append(code)
+        completed = sum(assignment.completed_at is not None for assignment in assignments)
+        status = "completed" if assignments and completed == len(assignments) else next(
+            (deployment_status(item) for item in own_deployments if deployment_status(item) in {"in_progress", "started"}),
+            deployment_status(own_deployments[0]),
+        )
+        tasks.append({
+            "deployment": own_deployments[0], "assignments": assignments,
+            "member_codes": ", ".join(member_codes), "target": len(assignments),
+            "completed": completed, "pending": len(assignments) - completed, "status": status,
+            "can_start": any(item.status == "assigned" for item in own_deployments),
+        })
+    return tasks
 
 
 def build_team_tasks(deployments: list[Deployment]) -> list[dict]:
