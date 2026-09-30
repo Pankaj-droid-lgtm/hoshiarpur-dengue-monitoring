@@ -86,7 +86,7 @@ def create_house():
         if not code or not locality_id or not address or House.query.filter_by(house_code=code).first():
             flash("House ID, locality, and address are required; House ID must be unique.", "error")
         else:
-            house = House(house_code=code, locality_id=locality_id, house_number=request.form.get("house_number", "").strip() or None, address=address, latitude=number_or_none(request.form.get("latitude")), longitude=number_or_none(request.form.get("longitude")))
+            house = House(house_code=code, locality_id=locality_id, house_number=request.form.get("house_number", "").strip() or None, address=address)
             db.session.add(house)
             db.session.flush()
             log_change("create", "house", house.id, after={"house_code": code})
@@ -94,13 +94,6 @@ def create_house():
             flash("House created.", "success")
             return redirect(url_for("geography.index"))
     return render_template("geography/house_form.html", localities=localities)
-
-
-def number_or_none(value: str | None) -> float | None:
-    try:
-        return float(value) if value else None
-    except ValueError:
-        return None
 
 
 def next_house_code() -> str:

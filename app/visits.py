@@ -22,7 +22,7 @@ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 @login_required
 def inspect_house(assignment_id: int):
     assignment = db.get_or_404(HouseAssignment, assignment_id)
-    if not can_access_deployment(assignment.deployment):
+    if not can_access_deployment(assignment.deployment) or current_user.role == "adc":
         abort(403)
     previous_positive = HouseVisit.query.filter_by(house_id=assignment.house_id).filter(HouseVisit.positive_containers > 0).order_by(HouseVisit.visited_at.desc()).first()
     if request.method == "POST":

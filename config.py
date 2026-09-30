@@ -12,7 +12,7 @@ class Config:
         "DENGUE_DATABASE_URL", f"sqlite:///{BASE_DIR / 'instance' / 'dengue.db'}"
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    MAX_CONTENT_LENGTH = 10 * 1024 * 1024
+    MAX_CONTENT_LENGTH = 5 * 1024 * 1024
     UPLOAD_DIRECTORY = os.environ.get("DENGUE_UPLOAD_DIRECTORY")
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"

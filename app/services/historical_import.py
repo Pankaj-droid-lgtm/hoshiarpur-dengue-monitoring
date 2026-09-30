@@ -193,11 +193,7 @@ def resolve_block(raw_name: str, source: SourceDocument) -> Block | None:
     for block in Block.query.order_by(Block.id).all():
         if normalized(block.name) == key:
             return block
-    block = Block(name=clean(raw_name))
-    db.session.add(block)
-    db.session.flush()
-    record_alias(raw_name, source, block=block)
-    return block
+    return None
 
 
 def resolve_locality(raw_name: str, block: Block, source: SourceDocument) -> Locality | None:
@@ -207,11 +203,7 @@ def resolve_locality(raw_name: str, block: Block, source: SourceDocument) -> Loc
     for locality in Locality.query.filter_by(block_id=block.id).order_by(Locality.id).all():
         if normalized(locality.name) == key:
             return locality
-    locality = Locality(block=block, name=clean(raw_name))
-    db.session.add(locality)
-    db.session.flush()
-    record_alias(raw_name, source, block=block, locality=locality)
-    return locality
+    return None
 
 
 def record_alias(raw_name: str, source: SourceDocument, block: Block, locality: Locality | None = None) -> None:

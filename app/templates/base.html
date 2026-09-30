@@ -33,5 +33,6 @@
   </header>
   {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<p class="{{ category }}">{{ message }}</p>{% endfor %}{% endwith %}
   <main class="page-content">{% block content %}{% endblock %}</main>
+  <script src="{{ url_for('static', filename='upload-form.js') }}" defer></script>
 </body>
 </html>

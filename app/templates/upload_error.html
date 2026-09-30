@@ -1,0 +1,3 @@
+{% extends "base.html" %}
+{% block title %}Upload too large{% endblock %}
+{% block content %}<section class="panel"><h2>Upload could not be completed</h2><p>The selected file is too large. Please choose or capture a smaller JPEG or PNG image and try again.</p><a class="button" href="{{ request.referrer or url_for('main.dashboard') }}">Go back</a></section>{% endblock %}

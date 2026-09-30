@@ -13,7 +13,8 @@ def csrf_token() -> str:
 
 
 def validate_csrf() -> None:
-    submitted = request.form.get("csrf_token", "")
+    """Prefer a request header so multipart bodies are not parsed just for CSRF."""
+    submitted = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token", "")
     stored = session.get("_csrf_token", "")
     if not stored or not hmac.compare_digest(stored, submitted):
         abort(400)

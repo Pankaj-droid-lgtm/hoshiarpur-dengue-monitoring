@@ -141,6 +141,7 @@ class OperationalWorkflowTests(unittest.TestCase):
         self.assertEqual(self.client.get("/monitoring/reports/high-risk-areas.csv").status_code, 200)
         self.assertEqual(self.post("/deployments/new", {}).status_code, 403)
         self.assertEqual(self.post(f"/deployments/{first_deployment}/assignments", {"house_id": str(self.ids["house"])}).status_code, 403)
+        self.assertEqual(self.client.post(f"/visits/assignments/{assignment_id}", data={"csrf_token": "test-csrf"}).status_code, 403)
 
     def test_historical_import_is_idempotent_and_preserves_operational_data(self):
         workbook = Workbook()
@@ -267,6 +268,26 @@ class OperationalWorkflowTests(unittest.TestCase):
         self.assertIn("/visits/assignments/", different_locality.location)
         with self.app.app_context():
             self.assertEqual(House.query.count(), 2)
+
+    def test_header_csrf_allows_multipart_house_photo_registration(self):
+        with self.app.app_context():
+            deployment = Deployment(
+                worker_id=self.ids["first_worker"], account_user_id=User.query.filter_by(username="W001").one().id,
+                worker_name="Test Worker One", worker_code="W001", block_id=self.ids["block"],
+                locality_id=self.ids["locality"], deployment_date=date.today(), team_name="Photo Team",
+                status="started", assigned_by_user_id=User.query.filter_by(username="admin-test").one().id,
+            )
+            db.session.add(deployment)
+            db.session.commit()
+            deployment_id = deployment.id
+        self.assertEqual(self.login("W001", "Worker-password-123").status_code, 302)
+        response = self.client.post(
+            f"/deployments/{deployment_id}/field-houses/new",
+            data={"house_number": "501", "household_member_name": "Photo Test", "address": "Photo address",
+                  "house_photo": (io.BytesIO(b"\x89PNG\r\n\x1a\nphoto"), "home.png", "image/png")},
+            content_type="multipart/form-data", headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(response.status_code, 302)
 
     def test_household_member_migration_creates_backup(self):
         with tempfile.TemporaryDirectory() as directory:

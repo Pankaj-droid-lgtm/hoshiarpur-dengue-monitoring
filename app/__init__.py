@@ -1,7 +1,8 @@
 from pathlib import Path
 
 import click
-from flask import Flask
+from flask import Flask, render_template
+from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.security import generate_password_hash
 
 from config import Config
@@ -43,6 +44,10 @@ def create_app(config_object=Config) -> Flask:
     app.register_blueprint(workers_bp)
     app.register_blueprint(visits_bp)
     app.jinja_env.globals["csrf_token"] = csrf_token
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def upload_too_large(error):
+        return render_template("upload_error.html"), 413
 
     @app.cli.command("init-db")
     def init_db():

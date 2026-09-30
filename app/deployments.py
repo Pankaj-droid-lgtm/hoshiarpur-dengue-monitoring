@@ -330,7 +330,11 @@ def register_field_house(deployment_id: int):
             flash("Possible existing house found. Open the existing house instead of creating a duplicate.", "error")
             return render_template("deployments/field_house_form.html", deployment=deployment, possible_house=possible_house)
         else:
-            photo_key, photo_type = save_reference_photo()
+            try:
+                photo_key, photo_type = save_reference_photo()
+            except ValueError as error:
+                flash(str(error), "error")
+                return render_template("deployments/field_house_form.html", deployment=deployment)
             house = House(
                 locality_id=deployment.locality_id,
                 house_code=house_code,
@@ -614,15 +618,15 @@ def next_house_code() -> str:
 def save_reference_photo() -> tuple[str, str]:
     upload = request.files.get("house_photo")
     if not upload or not upload.filename:
-        abort(400, "A house photo is required.")
+        raise ValueError("A house photo is required.")
     extension = Path(secure_filename(upload.filename)).suffix.lower()
     if upload.mimetype not in {"image/jpeg", "image/png"} or extension not in {".jpg", ".jpeg", ".png"}:
-        abort(400, "The house photo must be a JPEG or PNG image.")
+        raise ValueError("The house photo must be a JPEG or PNG image.")
     signature = upload.stream.read(16)
     upload.stream.seek(0)
     valid_signature = signature.startswith(b"\x89PNG\r\n\x1a\n") if extension == ".png" else signature.startswith(b"\xff\xd8\xff")
     if not valid_signature:
-        abort(400, "The uploaded house photo is not a valid image.")
+        raise ValueError("The uploaded house photo is not a valid image.")
     directory = Path(current_app.config["UPLOAD_DIRECTORY"]).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     filename = f"house-{uuid4().hex}{extension}"
