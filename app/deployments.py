@@ -95,7 +95,13 @@ def create_deployment():
             db.session.commit()
             flash("Deployment created. Add known houses only when authoritative house data is available.", "success")
             return redirect(url_for("deployments.detail", deployment_id=deployment.id))
-    return render_template("deployments/form.html", workers=active_workers(), blocks=Block.query.order_by(Block.name).all(), localities=Locality.query.order_by(Locality.name).all(), today=date.today())
+    return render_template(
+        "deployments/form.html",
+        workers=active_workers(),
+        blocks=Block.query.order_by(Block.name).all(),
+        localities=Locality.query.order_by(Locality.block_id, Locality.name).all(),
+        today=date.today(),
+    )
 
 
 @deployments_bp.get("/<int:deployment_id>")

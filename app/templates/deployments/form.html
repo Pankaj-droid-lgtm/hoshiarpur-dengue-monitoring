@@ -6,9 +6,29 @@
 <form method="post" class="panel form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <label>Date <input type="date" name="deployment_date" value="{{ today.isoformat() }}" required></label>
 <label>Permanent worker <select name="worker_id" required><option value="">Select worker</option>{% for worker in workers %}<option value="{{ worker.id }}">{{ worker.official_worker_id }} — {{ worker.full_name }} ({{ worker.designation }})</option>{% endfor %}</select></label>
-<label>Block <select name="block_id" required><option value="">Select block</option>{% for block in blocks %}<option value="{{ block.id }}">{{ block.name }}</option>{% endfor %}</select></label>
-<label>Locality/village <select name="locality_id"><option value="">All localities in selected block</option>{% for locality in localities %}<option value="{{ locality.id }}">{{ locality.block.name }} — {{ locality.name }}</option>{% endfor %}</select></label>
+<label>Block <select name="block_id" id="block_id" required><option value="">Select block</option>{% for block in blocks %}<option value="{{ block.id }}">{{ block.name }}</option>{% endfor %}</select></label>
+<label>Locality/village <select name="locality_id" id="locality_id" disabled><option value="">All localities in selected block</option>{% for locality in localities %}<option value="{{ locality.id }}" data-block-id="{{ locality.block_id }}" hidden>{{ locality.block.name }} — {{ locality.name }}</option>{% endfor %}</select></label>
 <label>Team <input name="team_name"></label><label>Priority <select name="priority"><option value="normal">Normal</option><option value="high">High</option><option value="priority_recheck">Priority recheck</option></select></label>
 <label class="full-width">Notes <textarea name="notes" rows="3"></textarea></label><p class="form-note full-width">Worker details, linked account, and supervisor are copied from the permanent worker record. Target houses are selected after this deployment is created, from the operational house master only.</p>
 <div class="form-actions"><button type="submit" {% if not blocks or not workers %}disabled{% endif %}>Create deployment</button><a class="button secondary" href="{{ url_for('deployments.dashboard') }}">Cancel</a></div></form>
+<script>
+  const blockSelect = document.getElementById("block_id");
+  const localitySelect = document.getElementById("locality_id");
+
+  function filterLocalities() {
+    const selectedBlockId = blockSelect.value;
+    localitySelect.value = "";
+    localitySelect.disabled = !selectedBlockId;
+    for (const option of localitySelect.options) {
+      if (!option.value) {
+        option.hidden = false;
+        continue;
+      }
+      option.hidden = option.dataset.blockId !== selectedBlockId;
+    }
+  }
+
+  blockSelect.addEventListener("change", filterLocalities);
+  filterLocalities();
+</script>
 {% endblock %}
