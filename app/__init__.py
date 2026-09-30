@@ -19,6 +19,7 @@ from .visits import visits_bp
 from .security import csrf_token
 from .services.historical_import import import_high_risk_reference, import_historical_workbook
 from .services.reference_geography import load_reference_geography
+from .services.migrations import add_household_member_column
 
 
 def create_app(config_object=Config) -> Flask:
@@ -123,5 +124,17 @@ def create_app(config_object=Config) -> Flask:
                 db.session.rollback()
                 raise click.ClickException(f"Geography load failed; no records were committed: {error}") from error
         click.echo(f"Reference geography loaded: {blocks_added} blocks and {localities_added} localities added.")
+
+    @app.cli.command("migrate-household-member")
+    def migrate_household_member():
+        """Back up the configured SQLite database and add the house member field."""
+        database_path = db.engine.url.database
+        if not database_path or db.engine.url.drivername != "sqlite":
+            raise click.ClickException("This migration supports only the configured SQLite database.")
+        try:
+            backup_path = add_household_member_column(database_path)
+        except Exception as error:
+            raise click.ClickException(f"Migration failed: {error}") from error
+        click.echo(f"Migration complete. Backup created: {backup_path}")
 
     return app

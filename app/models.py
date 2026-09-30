@@ -121,6 +121,7 @@ class House(TimestampMixin, db.Model):
     locality_id: Mapped[int] = mapped_column(ForeignKey("localities.id"), nullable=False)
     house_code: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
     house_number: Mapped[str | None] = mapped_column(String(80))
+    household_member_name: Mapped[str | None] = mapped_column(String(160))
     address: Mapped[str] = mapped_column(Text, nullable=False)
     latitude: Mapped[float | None]
     longitude: Mapped[float | None]

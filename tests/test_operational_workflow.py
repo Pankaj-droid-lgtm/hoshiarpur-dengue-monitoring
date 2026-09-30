@@ -1,4 +1,5 @@
 import io
+import sqlite3
 import tempfile
 import unittest
 from datetime import date
@@ -14,6 +15,7 @@ from app.models import (
     LarvalObservation, Locality, Photo, ReinspectionTask, User, Worker,
 )
 from app.services.historical_import import import_historical_workbook
+from app.services.migrations import add_household_member_column
 
 
 class TestConfig:
@@ -39,10 +41,10 @@ class OperationalWorkflowTests(unittest.TestCase):
             second_account = User(username="W002", password_hash=generate_password_hash("Worker-password-234"), role="field_worker")
             first_worker = Worker(official_worker_id="W001", full_name="Test Worker One", designation="Field Worker", user=first_account)
             second_worker = Worker(official_worker_id="W002", full_name="Test Worker Two", designation="Field Worker", user=second_account)
-            block = Block(name="Test Block")
+            block = Block(name="Bhunga")
             db.session.add_all([admin, adc, first_worker, second_worker, block])
             db.session.flush()
-            locality = Locality(block=block, name="Test Locality")
+            locality = Locality(block=block, name="Bhunga")
             house = House(locality=locality, house_code="HOS-TEST-001", address="Test house")
             db.session.add_all([locality, house])
             db.session.commit()
@@ -191,9 +193,57 @@ class OperationalWorkflowTests(unittest.TestCase):
         self.assertIn(b"Team 1", mobile.data)
         self.assertIn(b"W001, W002", mobile.data)
         self.assertIn(b"My houses", mobile.data)
-        self.assertIn(b"HOS-TEST-001", mobile.data)
         self.assertEqual(self.post(f"/deployments/{worker_deployment_id}/start").status_code, 302)
+        self.assertIn(b"HOS-TEST-001", self.client.get("/deployments/mobile").data)
         self.assertEqual(self.client.get(f"/visits/assignments/{assignment_id}").status_code, 200)
+
+    def test_worker_registers_house_after_starting_zero_house_task(self):
+        with self.app.app_context():
+            House.query.delete()
+            db.session.commit()
+        self.assertEqual(self.login("admin-test", "Admin-password-123").status_code, 302)
+        response = self.post("/deployments/new", {
+            "deployment_date": date.today().isoformat(),
+            "worker_ids": [str(self.ids["first_worker"])],
+            "block_id": str(self.ids["block"]),
+            "locality_id": str(self.ids["locality"]),
+            "team_name": "Field Registration Team",
+        })
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            deployment = Deployment.query.one()
+            self.assertEqual(len(deployment.house_assignments), 0)
+            deployment_id = deployment.id
+        self.post("/auth/logout")
+        self.assertEqual(self.login("W001", "Worker-password-123").status_code, 302)
+        self.assertEqual(self.post(f"/deployments/{deployment_id}/start").status_code, 302)
+        self.assertEqual(self.client.get(f"/deployments/{deployment_id}/field-houses/new").status_code, 200)
+        response = self.post(f"/deployments/{deployment_id}/field-houses/new", {
+            "house_number": "12", "household_member_name": "Test Household",
+            "address": "Field registered address", "latitude": "31.500", "longitude": "75.900",
+        })
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/visits/assignments/", response.location)
+        with self.app.app_context():
+            house = House.query.one()
+            self.assertEqual(house.house_code, "HP-HOS-000001")
+            self.assertEqual(house.household_member_name, "Test Household")
+            self.assertEqual(house.locality_id, self.ids["locality"])
+            self.assertEqual(HouseAssignment.query.one().deployment_id, deployment_id)
+
+    def test_household_member_migration_creates_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = f"{directory}/migration-test.db"
+            connection = sqlite3.connect(database_path)
+            connection.execute("CREATE TABLE houses (id INTEGER PRIMARY KEY, house_code VARCHAR(80))")
+            connection.commit()
+            connection.close()
+            backup_path = add_household_member_column(database_path)
+            self.assertTrue(backup_path.exists())
+            connection = sqlite3.connect(database_path)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(houses)")}
+            connection.close()
+            self.assertIn("household_member_name", columns)
 
 
 if __name__ == "__main__":

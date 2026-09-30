@@ -23,8 +23,6 @@ DEPLOYMENT_STATUSES = ("assigned", "started", "in_progress", "completed", "overd
 
 
 def deployment_status(deployment: Deployment) -> str:
-    if not deployment.house_assignments:
-        return "no_houses"
     if deployment.status in {"completed", "cancelled"}:
         return deployment.status
     if deployment.deployment_date < date.today():
@@ -91,13 +89,6 @@ def create_deployment():
         else:
             task_filter = request.form.get("risk_filter", "all")
             houses = eligible_task_houses(block, locality, scheduled_date, task_filter)
-            if not houses:
-                flash("No eligible houses are available for this team task.", "error")
-                return render_template(
-                    "deployments/form.html", workers=active_workers(),
-                    blocks=approved_blocks(), localities=approved_localities(),
-                    high_risk_house_ids=high_risk_house_ids(), today=date.today(),
-                )
             deployments = []
             for worker in sorted(workers, key=lambda item: item.official_worker_id):
                 deployment = Deployment(
@@ -125,7 +116,7 @@ def create_deployment():
             for deployment in deployments:
                 log_change("create", "deployment", deployment.id, after={"date": str(scheduled_date), "worker_id": deployment.worker_id, "block_id": block.id, "risk_filter": task_filter})
             db.session.commit()
-            flash(f"Task assigned to {len(deployments)} workers with {len(houses)} eligible houses distributed.", "success")
+            flash(f"Task assigned to {len(deployments)} workers with {len(houses)} existing houses distributed. Workers can register additional houses in the field.", "success")
             return redirect(url_for("deployments.team_detail", deployment_id=deployments[0].id))
     return render_template(
         "deployments/form.html",
@@ -201,16 +192,12 @@ def start_deployment(deployment_id: int):
     if current_user.role != "field_worker" and not has_operational_management_access():
         abort(403)
     owned_deployments = [item for item in team_deployments(deployment) if can_access_deployment(item)]
-    deployable = [item for item in owned_deployments if item.house_assignments]
-    if not deployable:
-        flash("This task has no assigned houses and cannot be started.", "error")
-    else:
-        for item in deployable:
-            if item.status == "assigned":
-                item.status = "started"
-                item.started_at = datetime.utcnow()
-                log_change("start", "deployment", item.id, after={"status": "started"})
-        db.session.commit()
+    for item in owned_deployments:
+        if item.status == "assigned":
+            item.status = "started"
+            item.started_at = datetime.utcnow()
+            log_change("start", "deployment", item.id, after={"status": "started"})
+    db.session.commit()
     return redirect(url_for("deployments.mobile"))
 
 
@@ -334,6 +321,52 @@ def mobile_visits():
     return render_template("deployments/mobile_visits.html", visits=visits)
 
 
+@deployments_bp.route("/<int:deployment_id>/field-houses/new", methods=["GET", "POST"])
+@login_required
+def register_field_house(deployment_id: int):
+    """Register a permanent house in the logged-in worker's assigned locality."""
+    deployment = db.get_or_404(Deployment, deployment_id)
+    if not can_access_deployment(deployment):
+        abort(403)
+    if current_user.role != "field_worker" or deployment.status not in {"started", "in_progress"}:
+        abort(403)
+    if request.method == "POST":
+        validate_csrf()
+        house_number = request.form.get("house_number", "").strip()
+        household_member_name = request.form.get("household_member_name", "").strip()
+        address = request.form.get("address", "").strip()
+        house_code = request.form.get("house_code", "").strip() or next_house_code()
+        latitude = optional_float(request.form.get("latitude"))
+        longitude = optional_float(request.form.get("longitude"))
+        if not house_number or not household_member_name or not address:
+            flash("House number, household member name, and address are required.", "error")
+        elif (latitude is None) != (longitude is None) or not valid_coordinates(latitude, longitude):
+            flash("Capture both valid latitude and longitude, or leave both blank.", "error")
+        elif House.query.filter_by(house_code=house_code).first():
+            flash("That permanent House ID already exists.", "error")
+        elif House.query.filter_by(locality_id=deployment.locality_id, house_number=house_number).first():
+            flash("A house with this house number is already registered in the assigned locality.", "error")
+        else:
+            house = House(
+                locality_id=deployment.locality_id,
+                house_code=house_code,
+                house_number=house_number,
+                household_member_name=household_member_name,
+                address=address,
+                latitude=latitude,
+                longitude=longitude,
+            )
+            assignment = HouseAssignment(deployment=deployment, house=house, priority=deployment.priority)
+            db.session.add_all([house, assignment])
+            db.session.flush()
+            if deployment.status == "started":
+                deployment.status = "in_progress"
+            log_change("register_field_house", "house", house.id, after={"house_code": house.house_code, "deployment_id": deployment.id})
+            db.session.commit()
+            return redirect(url_for("visits.inspect_house", assignment_id=assignment.id))
+    return render_template("deployments/field_house_form.html", deployment=deployment)
+
+
 def active_workers() -> list[Worker]:
     return Worker.query.filter_by(is_active=True).order_by(Worker.full_name).all()
 
@@ -361,7 +394,6 @@ def is_valid_team_task(deployment: Deployment) -> bool:
     return bool(
         deployment.team_name
         and deployment.locality_id
-        and deployment.house_assignments
         and is_approved_location(deployment.block, deployment.locality)
     )
 
@@ -541,3 +573,23 @@ def optional_int(value: str | None) -> int | None:
         return int(value) if value else None
     except ValueError:
         return None
+
+
+def optional_float(value: str | None) -> float | None:
+    try:
+        return float(value) if value else None
+    except ValueError:
+        return None
+
+
+def valid_coordinates(latitude: float | None, longitude: float | None) -> bool:
+    if latitude is None and longitude is None:
+        return True
+    return latitude is not None and longitude is not None and -90 <= latitude <= 90 and -180 <= longitude <= 180
+
+
+def next_house_code() -> str:
+    sequence = 1
+    while House.query.filter_by(house_code=f"HP-HOS-{sequence:06d}").first():
+        sequence += 1
+    return f"HP-HOS-{sequence:06d}"
