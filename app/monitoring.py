@@ -1,6 +1,6 @@
 from datetime import date
-from io import StringIO
-import csv
+from io import BytesIO
+from openpyxl import Workbook
 
 from flask import Blueprint, Response, render_template, request
 from flask_login import login_required
@@ -67,89 +67,165 @@ def dashboard():
     return render_template("monitoring/dashboard.html", selected_date=selected_date, deployments=deployments, blocks=Block.query.order_by(Block.name).all(), localities=Locality.query.order_by(Locality.name).all(), historical_sources=SourceDocument.query.order_by(SourceDocument.imported_at.desc()).all(), historical=historical, filters={"block_id": block_id, "locality_id": locality_id, "worker": worker_query, "status": status, "historical_source_id": historical_source_id, "historical_block": historical_block, "historical_area_type": historical_area_type}, metrics={"deployed": len(deployments), "assigned": assigned, "completed": completed, "pending": assigned-completed, "visits": len(visits), "positive": len(positives), "repeat_positive": repeat_positive, "reinspection": ReinspectionTask.query.filter_by(status="open").count(), "active": sum(item.status not in {"completed", "cancelled"} for item in deployments), "overdue": sum(item.deployment_date < date.today() and item.status not in {"completed", "cancelled"} for item in deployments)})
 
 
-@monitoring_bp.get("/reports/deployments.csv")
+@monitoring_bp.get("/reports/deployments.xlsx")
 @login_required
 def deployment_csv():
     require_management_access()
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Date", "Worker", "Worker ID", "Block", "Locality", "Target", "Completed", "Status"])
+    rows = [["Date", "Worker", "Worker ID", "Block", "Locality", "Target", "Completed", "Status"]]
     for deployment in Deployment.query.order_by(Deployment.deployment_date.desc()).all():
         assignments = deployment.house_assignments
-        writer.writerow([deployment.deployment_date, deployment.worker_name, deployment.worker_code or "", deployment.block.name, deployment.locality.name if deployment.locality else "", len(assignments), sum(item.completed_at is not None for item in assignments), deployment.status])
-    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition":"attachment; filename=daily-deployments.csv"})
+        rows.append([
+            deployment.deployment_date,
+            deployment.worker_name,
+            deployment.worker_code or "",
+            deployment.block.name,
+            deployment.locality.name if deployment.locality else "",
+            len(assignments),
+            sum(item.completed_at is not None for item in assignments),
+            deployment.status,
+        ])
+    return xlsx_response(rows, "daily-deployments.xlsx")
 
 
-@monitoring_bp.get("/reports/visits.csv")
+@monitoring_bp.get("/reports/visits.xlsx")
 @login_required
 def visits_csv():
     require_management_access()
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Visit time", "Worker", "House ID", "Block", "Locality", "Containers checked", "Positive containers", "Outcome"])
+    rows = [["Visit time", "Worker", "House ID", "Block", "Locality", "Containers checked", "Positive containers", "Outcome"]]
     for visit in HouseVisit.query.order_by(HouseVisit.visited_at.desc()).all():
-        writer.writerow([visit.visited_at, visit.worker_name_snapshot, visit.house.house_code, visit.house.locality.block.name, visit.house.locality.name, visit.containers_checked, visit.positive_containers, visit.visit_outcome])
-    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition":"attachment; filename=house-visits.csv"})
+        rows.append([
+            visit.visited_at,
+            visit.worker_name_snapshot,
+            visit.house.house_code,
+            visit.house.locality.block.name,
+            visit.house.locality.name,
+            visit.containers_checked,
+            visit.positive_containers,
+            visit.visit_outcome,
+        ])
+    return xlsx_response(rows, "house-visits.xlsx")
 
 
-@monitoring_bp.get("/reports/historical-cases.csv")
+@monitoring_bp.get("/reports/historical-cases.xlsx")
 @login_required
 def historical_cases_csv():
     require_management_access()
-    output = StringIO()
-    writer = csv.writer(output)
     from flask_login import current_user
     include_identifiers = current_user.role != "adc"
-    writer.writerow(["Source file", "Source row", "Source serial", "Patient name", "Address", "Block", "Town", "Testing date (source)"] if include_identifiers else ["Source file", "Source row", "Block", "Town", "Testing date (source)"])
+
+    if include_identifiers:
+        headers = ["Source file", "Source row", "Source serial", "Patient name", "Address", "Block", "Town", "Testing date (source)"]
+    else:
+        headers = ["Source file", "Source row", "Block", "Town", "Testing date (source)"]
+
+    rows = [headers]
+
     for case in HistoricalDengueCase.query.order_by(HistoricalDengueCase.id).all():
-        source_name = case.source_document.original_filename if hasattr(case, 'source_document') else ''
-        writer.writerow([source_name, case.source_row, case.source_serial, case.patient_name, case.address_raw, case.block_raw, case.town_raw, case.testing_date_raw] if include_identifiers else [source_name, case.source_row, case.block_raw, case.town_raw, case.testing_date_raw])
-    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition":"attachment; filename=historical-dengue-cases.csv"})
+        source_name = case.source_document.original_filename if hasattr(case, "source_document") else ""
+
+        if include_identifiers:
+            rows.append([
+                source_name,
+                case.source_row,
+                case.source_serial,
+                case.patient_name,
+                case.address_raw,
+                case.block_raw,
+                case.town_raw,
+                case.testing_date_raw,
+            ])
+        else:
+            rows.append([
+                source_name,
+                case.source_row,
+                case.block_raw,
+                case.town_raw,
+                case.testing_date_raw,
+            ])
+
+    return xlsx_response(rows, "historical-dengue-cases.xlsx")
 
 
-@monitoring_bp.get("/reports/historical-vbd.csv")
+@monitoring_bp.get("/reports/historical-vbd.xlsx")
 @login_required
 def historical_vbd_csv():
     require_management_access()
-    return historical_json_csv(HistoricalBlockReport.query.order_by(HistoricalBlockReport.id), "historical-vbd-reporting.csv")
+    return historical_xlsx(
+        HistoricalBlockReport.query.order_by(HistoricalBlockReport.id),
+        "historical-vbd-reporting.xlsx",
+    )
 
 
-@monitoring_bp.get("/reports/historical-field-responses.csv")
+@monitoring_bp.get("/reports/historical-field-responses.xlsx")
 @login_required
 def historical_field_responses_csv():
     require_management_access()
-    return historical_json_csv(HistoricalFieldResponse.query.order_by(HistoricalFieldResponse.id), "historical-field-responses.csv")
+    return historical_xlsx(
+        HistoricalFieldResponse.query.order_by(HistoricalFieldResponse.id),
+        "historical-field-responses.xlsx",
+    )
 
 
-@monitoring_bp.get("/reports/high-risk-areas.csv")
+@monitoring_bp.get("/reports/high-risk-areas.xlsx")
 @login_required
 def high_risk_areas_csv():
     require_management_access()
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Source file", "Source row", "Area type", "Block", "Locality", "Positive case count"])
+    rows = [["Source file", "Source row", "Area type", "Block", "Locality", "Positive case count"]]
+
     for item in HistoricalHighRiskCluster.query.order_by(HistoricalHighRiskCluster.id).all():
         source = db.session.get(SourceDocument, item.source_document_id)
-        writer.writerow([source.original_filename if source else "", item.source_row, item.area_type_raw, item.block_raw, item.locality_raw, item.positive_case_count])
-    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition":"attachment; filename=high-risk-areas.csv"})
+        rows.append([
+            source.original_filename if source else "",
+            item.source_row,
+            item.area_type_raw,
+            item.block_raw,
+            item.locality_raw,
+            item.positive_case_count,
+        ])
+
+    return xlsx_response(rows, "high-risk-areas.xlsx")
 
 
-def historical_json_csv(query, filename: str):
-    output = StringIO()
-    writer = csv.writer(output)
+def xlsx_response(rows, filename):
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Report"
+
+    for row in rows:
+        worksheet.append(row)
+
+    if rows:
+        worksheet.freeze_panes = "A2"
+        worksheet.auto_filter.ref = worksheet.dimensions
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+
+    return Response(
+        output.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+def historical_xlsx(query, filename):
     records = query.all()
     headers = ["Source file", "Source sheet", "Source row", "Block"]
     value_headers = sorted({key for record in records for key in record.values})
-    writer.writerow(headers + value_headers)
+
+    rows = [headers + value_headers]
+
     for record in records:
         source = db.session.get(SourceDocument, record.source_document_id)
-        writer.writerow([
+        rows.append([
             source.original_filename if source else "",
             record.source_sheet,
             record.source_row,
             record.block_raw,
         ] + [record.values.get(key, "") for key in value_headers])
-    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+    return xlsx_response(rows, filename)
 
 
 def aggregate_report_metrics(records):
