@@ -142,6 +142,28 @@ class OperationalWorkflowTests(unittest.TestCase):
             self.assertEqual(HouseVisit.query.count(), 0)
             self.assertEqual(House.query.count(), 1)
 
+    def test_daily_task_distributes_eligible_houses_to_selected_workers(self):
+        self.assertEqual(self.login("admin-test", "Admin-password-123").status_code, 302)
+        with self.app.app_context():
+            db.session.add(House(locality_id=self.ids["locality"], house_code="HP-HOS-000002", address="Second test house"))
+            db.session.commit()
+        response = self.post("/deployments/new", {
+            "deployment_date": date.today().isoformat(),
+            "worker_ids": [str(self.ids["first_worker"]), str(self.ids["second_worker"])],
+            "block_id": str(self.ids["block"]),
+            "locality_id": str(self.ids["locality"]),
+            "risk_filter": "all",
+        })
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            deployments = Deployment.query.order_by(Deployment.worker_id).all()
+            self.assertEqual(len(deployments), 2)
+            self.assertEqual(HouseAssignment.query.count(), 2)
+            self.assertEqual(sorted(len(item.house_assignments) for item in deployments), [1, 1])
+        self.assertEqual(self.client.get(
+            f"/deployments/eligible-house-count?block_id={self.ids['block']}&locality_id={self.ids['locality']}&deployment_date={date.today().isoformat()}"
+        ).get_json(), {"count": 0})
+
 
 if __name__ == "__main__":
     unittest.main()

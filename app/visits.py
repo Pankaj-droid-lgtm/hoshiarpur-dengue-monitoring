@@ -54,6 +54,8 @@ def inspect_house(assignment_id: int):
         if positives:
             task = ReinspectionTask(house_id=assignment.house_id, origin_visit=visit, due_date=(visit.visited_at + timedelta(days=7)).date(), reason="Larval-positive house inspection")
             db.session.add(task)
+        else:
+            ReinspectionTask.query.filter_by(house_id=assignment.house_id, status="open").update({"status": "completed"})
         log_change("submit_visit", "house_visit", visit.id, after={"house_id": visit.house_id, "positive_containers": positives})
         db.session.commit()
         flash("Visit recorded. Previous inspections remain unchanged.", "success")

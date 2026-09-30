@@ -80,7 +80,7 @@ def create_house():
     localities = Locality.query.order_by(Locality.name).all()
     if request.method == "POST":
         validate_csrf()
-        code = request.form.get("house_code", "").strip()
+        code = request.form.get("house_code", "").strip() or next_house_code()
         locality_id = request.form.get("locality_id", type=int)
         address = request.form.get("address", "").strip()
         if not code or not locality_id or not address or House.query.filter_by(house_code=code).first():
@@ -101,3 +101,10 @@ def number_or_none(value: str | None) -> float | None:
         return float(value) if value else None
     except ValueError:
         return None
+
+
+def next_house_code() -> str:
+    sequence = 1
+    while House.query.filter_by(house_code=f"HP-HOS-{sequence:06d}").first():
+        sequence += 1
+    return f"HP-HOS-{sequence:06d}"

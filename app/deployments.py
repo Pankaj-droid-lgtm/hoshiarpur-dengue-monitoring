@@ -1,10 +1,13 @@
 from datetime import date, datetime
 
-from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from .extensions import db
-from .models import Block, Deployment, House, HouseAssignment, HouseVisit, Locality, ReinspectionTask, Worker
+from .models import (
+    Block, Deployment, HistoricalHighRiskCluster, House, HouseAssignment,
+    HouseVisit, Locality, ReinspectionTask, Worker,
+)
 from .security import validate_csrf
 from .services.audit import log_change
 from .services.permissions import (
@@ -60,48 +63,74 @@ def create_deployment():
     require_operational_management_access()
     if request.method == "POST":
         validate_csrf()
-        worker_id = optional_int(request.form.get("worker_id"))
-        worker = db.session.get(Worker, worker_id) if worker_id else None
+        worker_ids = [worker_id for worker_id in request.form.getlist("worker_ids", type=int) if worker_id]
+        if not worker_ids and request.form.get("worker_id", type=int):
+            worker_ids = [request.form.get("worker_id", type=int)]
+        workers = Worker.query.filter(Worker.id.in_(worker_ids), Worker.is_active.is_(True)).all() if worker_ids else []
         block_id = optional_int(request.form.get("block_id"))
         block = db.session.get(Block, block_id) if block_id else None
         locality_id = request.form.get("locality_id", "").strip()
         locality = db.session.get(Locality, optional_int(locality_id)) if locality_id else None
         scheduled_date = parse_date(request.form.get("deployment_date"))
-        if not worker or not worker.is_active or not block or not scheduled_date:
-            flash("Date, an active permanent worker, and block are required.", "error")
+        if not workers or len(workers) != len(set(worker_ids)) or not block or not scheduled_date:
+            flash("Date, at least one active permanent worker, and block are required.", "error")
         elif locality and locality.block_id != block.id:
             flash("The locality does not belong to the selected block.", "error")
         else:
-            deployment = Deployment(
-                worker=worker,
-                account_user=worker.user,
-                worker_name=worker.full_name,
-                worker_code=worker.official_worker_id,
-                worker_contact=worker.phone_number,
-                worker_designation=worker.designation,
-                block=block,
-                locality=locality,
-                supervisor=worker.supervisor,
-                supervisor_name=worker.supervisor.full_name if worker.supervisor else None,
-                deployment_date=scheduled_date,
-                team_name=request.form.get("team_name", "").strip() or None,
-                priority=request.form.get("priority", "normal"),
-                notes=request.form.get("notes", "").strip() or None,
-                assigned_by_user_id=current_user.id,
-            )
-            db.session.add(deployment)
+            task_filter = request.form.get("risk_filter", "all")
+            deployments = []
+            for worker in sorted(workers, key=lambda item: item.official_worker_id):
+                deployment = Deployment(
+                    worker=worker,
+                    account_user=worker.user,
+                    worker_name=worker.full_name,
+                    worker_code=worker.official_worker_id,
+                    worker_contact=worker.phone_number,
+                    worker_designation=worker.designation,
+                    block=block,
+                    locality=locality,
+                    supervisor=worker.supervisor,
+                    supervisor_name=worker.supervisor.full_name if worker.supervisor else None,
+                    deployment_date=scheduled_date,
+                    team_name=request.form.get("team_name", "").strip() or None,
+                    priority=request.form.get("priority", "normal"),
+                    notes=request.form.get("notes", "").strip() or None,
+                    assigned_by_user_id=current_user.id,
+                )
+                db.session.add(deployment)
+                deployments.append(deployment)
             db.session.flush()
-            log_change("create", "deployment", deployment.id, after={"date": str(scheduled_date), "worker_id": worker.id, "block_id": block.id})
+            houses = eligible_task_houses(block, locality, scheduled_date, task_filter)
+            for index, house in enumerate(houses):
+                db.session.add(HouseAssignment(deployment=deployments[index % len(deployments)], house=house, priority="priority_recheck" if house.id in high_risk_house_ids(block, locality) else deployments[index % len(deployments)].priority))
+            for deployment in deployments:
+                log_change("create", "deployment", deployment.id, after={"date": str(scheduled_date), "worker_id": deployment.worker_id, "block_id": block.id, "risk_filter": task_filter})
             db.session.commit()
-            flash("Deployment created. Add known houses only when authoritative house data is available.", "success")
-            return redirect(url_for("deployments.detail", deployment_id=deployment.id))
+            flash(f"Task assigned to {len(deployments)} workers with {len(houses)} eligible houses distributed.", "success")
+            return redirect(url_for("deployments.dashboard", date=scheduled_date.isoformat()))
     return render_template(
         "deployments/form.html",
         workers=active_workers(),
         blocks=Block.query.order_by(Block.name).all(),
         localities=Locality.query.order_by(Locality.block_id, Locality.name).all(),
+        high_risk_house_ids=high_risk_house_ids(),
         today=date.today(),
     )
+
+
+@deployments_bp.get("/eligible-house-count")
+@login_required
+def eligible_house_count():
+    """Return current assignment capacity for the daily deployment form."""
+    require_operational_management_access()
+    block = db.session.get(Block, optional_int(request.args.get("block_id")))
+    locality_id = request.args.get("locality_id", "").strip()
+    locality = db.session.get(Locality, optional_int(locality_id)) if locality_id else None
+    scheduled_date = parse_date(request.args.get("deployment_date"))
+    if not block or not scheduled_date or (locality and locality.block_id != block.id):
+        return jsonify(count=0)
+    houses = eligible_task_houses(block, locality, scheduled_date, request.args.get("risk_filter", "all"))
+    return jsonify(count=len(houses))
 
 
 @deployments_bp.get("/<int:deployment_id>")
@@ -123,6 +152,7 @@ def detail(deployment_id: int):
         available_houses=available_houses(deployment, request.args.get("house_q", "").strip()),
         destinations=destinations, deployment_status=deployment_status,
         house_query=request.args.get("house_q", "").strip(), can_manage=has_operational_management_access(),
+        house_statuses=house_statuses(assignment.house for assignment in assignments),
     )
 
 
@@ -235,7 +265,8 @@ def mobile():
             Deployment.deployment_date == date.today(),
             ReinspectionTask.status == "open",
         ).distinct().count()
-    return render_template("deployments/mobile.html", deployments=deployments, priority_rechecks=priority_rechecks, today=date.today(), deployment_status=deployment_status)
+    statuses = house_statuses(assignment.house for deployment in deployments for assignment in deployment.house_assignments)
+    return render_template("deployments/mobile.html", deployments=deployments, priority_rechecks=priority_rechecks, today=date.today(), deployment_status=deployment_status, house_statuses=statuses)
 
 
 @deployments_bp.get("/mobile/houses")
@@ -282,6 +313,54 @@ def available_houses(deployment: Deployment, search: str) -> list[House]:
         return []
     pattern = f"%{search}%"
     return query.filter((House.house_code.ilike(pattern)) | (House.address.ilike(pattern))).order_by(House.house_code).limit(100).all()
+
+
+def eligible_task_houses(block: Block, locality: Locality | None, deployment_date: date, risk_filter: str) -> list[House]:
+    query = House.query.join(Locality).filter(House.is_active.is_(True), Locality.block_id == block.id)
+    if locality:
+        query = query.filter(House.locality_id == locality.id)
+    query = query.filter(~House.assignments.any(HouseAssignment.deployment.has(
+        (Deployment.deployment_date == deployment_date) & (Deployment.status != "cancelled")
+    )))
+    houses = query.order_by(House.house_code).all()
+    high_risk_ids = high_risk_house_ids(block, locality)
+    if risk_filter == "high_risk":
+        return [house for house in houses if house.id in high_risk_ids]
+    if risk_filter == "normal":
+        return [house for house in houses if house.id not in high_risk_ids]
+    return houses
+
+
+def high_risk_house_ids(block: Block | None = None, locality: Locality | None = None) -> set[int]:
+    clusters = HistoricalHighRiskCluster.query.all()
+    localities = Locality.query
+    if block:
+        localities = localities.filter_by(block_id=block.id)
+    if locality:
+        localities = localities.filter_by(id=locality.id)
+    matched = set()
+    for candidate in localities.all():
+        for cluster in clusters:
+            locality_matches = normalized_name(candidate.name) == normalized_name(cluster.locality_raw or "")
+            block_matches = not cluster.block_raw or (
+                normalized_name(candidate.block.name) == normalized_name(cluster.block_raw)
+            )
+            if locality_matches and block_matches:
+                matched.update(house.id for house in candidate.houses)
+                break
+    return matched
+
+
+def house_statuses(houses) -> dict[int, str]:
+    statuses = {}
+    for house in houses:
+        status = "positive_revisit" if ReinspectionTask.query.filter_by(house_id=house.id, status="open").first() else "normal"
+        statuses[house.id] = status
+    return statuses
+
+
+def normalized_name(value: str) -> str:
+    return "".join(character for character in value.casefold() if character.isalnum())
 
 
 def active_assignment_for_date(house_id: int, deployment_date: date, exclude_deployment_id: int | None = None) -> bool:
