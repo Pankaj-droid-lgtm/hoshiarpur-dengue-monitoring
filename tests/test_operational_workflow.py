@@ -11,7 +11,7 @@ from werkzeug.security import generate_password_hash
 from app import create_app
 from app.extensions import db
 from app.models import (
-    Block, Deployment, GpsCapture, House, HouseAssignment, HouseVisit,
+    Block, Deployment, House, HouseAssignment, HouseVisit,
     LarvalObservation, Locality, Photo, ReinspectionTask, User, Worker,
 )
 from app.services.historical_import import import_historical_workbook
@@ -130,7 +130,6 @@ class OperationalWorkflowTests(unittest.TestCase):
         with self.app.app_context():
             self.assertEqual(db.session.get(Deployment, second_deployment).status, "completed")
             self.assertEqual(HouseVisit.query.count(), 1)
-            self.assertEqual(GpsCapture.query.count(), 0)
             self.assertEqual(Photo.query.count(), 1)
             self.assertEqual(LarvalObservation.query.count(), 1)
             self.assertEqual(ReinspectionTask.query.count(), 1)

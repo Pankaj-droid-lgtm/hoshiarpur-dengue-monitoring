@@ -12,7 +12,6 @@ from .extensions import db
 
 class Role(str, Enum):
     ADMIN = "admin"
-    DC = "dc"
     ADC = "adc"
     DISTRICT_OFFICER = "district_officer"
     BLOCK_OFFICER = "block_officer"
@@ -31,7 +30,7 @@ class User(UserMixin, TimestampMixin, db.Model):
     __tablename__ = "users"
     __table_args__ = (
         CheckConstraint(
-            "role IN ('admin', 'dc', 'adc', 'district_officer', 'block_officer', 'supervisor', 'field_worker')",
+            "role IN ('admin', 'adc', 'district_officer', 'block_officer', 'supervisor', 'field_worker')",
             name="ck_user_role",
         ),
     )
@@ -208,7 +207,6 @@ class HouseVisit(TimestampMixin, db.Model):
     assignment: Mapped[HouseAssignment | None] = relationship(back_populates="visits")
     larval_observations: Mapped[list[LarvalObservation]] = relationship(back_populates="visit")
     photos: Mapped[list[Photo]] = relationship(back_populates="visit")
-    gps_capture: Mapped[GpsCapture | None] = relationship(back_populates="visit", uselist=False)
     reinspections: Mapped[list[ReinspectionTask]] = relationship(back_populates="origin_visit")
 
 
@@ -251,23 +249,6 @@ class Photo(TimestampMixin, db.Model):
     uploaded_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
 
     visit: Mapped[HouseVisit] = relationship(back_populates="photos")
-
-
-class GpsCapture(TimestampMixin, db.Model):
-    __tablename__ = "gps_captures"
-    __table_args__ = (
-        CheckConstraint("latitude BETWEEN -90 AND 90", name="ck_gps_latitude"),
-        CheckConstraint("longitude BETWEEN -180 AND 180", name="ck_gps_longitude"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    visit_id: Mapped[int] = mapped_column(ForeignKey("house_visits.id"), unique=True, nullable=False)
-    latitude: Mapped[float] = mapped_column(nullable=False)
-    longitude: Mapped[float] = mapped_column(nullable=False)
-    accuracy_metres: Mapped[float | None]
-    captured_at: Mapped[datetime] = mapped_column(nullable=False)
-
-    visit: Mapped[HouseVisit] = relationship(back_populates="gps_capture")
 
 
 class SourceDocument(TimestampMixin, db.Model):

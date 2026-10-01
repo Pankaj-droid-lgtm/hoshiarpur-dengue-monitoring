@@ -2,8 +2,8 @@ from flask import abort
 from flask_login import current_user
 
 
-MANAGEMENT_ROLES = {"admin", "dc", "adc", "district_officer", "block_officer", "supervisor"}
-OPERATIONAL_MANAGEMENT_ROLES = {"admin", "dc", "district_officer", "block_officer", "supervisor"}
+MANAGEMENT_ROLES = {"admin", "adc", "district_officer", "block_officer", "supervisor"}
+OPERATIONAL_MANAGEMENT_ROLES = {"admin", "district_officer", "block_officer", "supervisor"}
 
 
 def require_management_access() -> None:
