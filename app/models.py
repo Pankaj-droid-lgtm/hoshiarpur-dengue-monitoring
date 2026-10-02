@@ -127,8 +127,6 @@ class House(TimestampMixin, db.Model):
     reference_photo_content_type: Mapped[str | None] = mapped_column(String(100))
     registered_by_worker_id: Mapped[int | None] = mapped_column(ForeignKey("workers.id"))
     address: Mapped[str] = mapped_column(Text, nullable=False)
-    latitude: Mapped[float | None]
-    longitude: Mapped[float | None]
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
 
     locality: Mapped[Locality] = relationship(back_populates="houses")

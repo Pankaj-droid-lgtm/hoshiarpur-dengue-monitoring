@@ -1,1 +1,34 @@
-{% extends "base.html" %}{% block content %}<div class="page-heading"><div><p class="eyebrow">Operational map</p><h2>House surveillance map</h2><p>Only verified house coordinates are shown.</p></div></div><div id="map" class="map"></div><p class="form-note">Red: current larval positive. Orange: previously positive/reinspection. Green: currently clear. Yellow: pending.</p><link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>const map=L.map('map').setView([31.5143,75.9115],10);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors'}).addTo(map);const markers={{ markers|tojson }};markers.forEach(m=>L.circleMarker([m.latitude,m.longitude],{color:m.status,fillColor:m.status,fillOpacity:.8,radius:8}).addTo(map).bindPopup(`<strong>${m.house_code}</strong><br>${m.locality}<br>Last visit: ${m.last_visit}<br>Status: ${m.status}`));if(markers.length)map.fitBounds(markers.map(m=>[m.latitude,m.longitude]));</script>{% endblock %}
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">House surveillance</p><h2>House surveillance dashboard</h2></div>
+</div>
+
+<div class="form-note">
+  House surveillance dashboard showing inspection status. No GPS/geolocation data is captured or displayed.
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>House Code</th>
+      <th>Locality</th>
+      <th>Status</th>
+      <th>Last visit</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for marker in markers %}
+  <tr>
+    <td>{{ marker.house_code }}</td>
+    <td>{{ marker.locality }}</td>
+    <td><span class="status {{ marker.status }}">{{ marker.status }}</span></td>
+    <td>{{ marker.last_visit }}</td>
+  </tr>
+  {% endfor %}
+  {% else %}
+  <tr><td colspan="4" class="empty-state">No houses with recorded data.</td></tr>
+  {% endif %}
+  </tbody>
+</table>
+{% endblock %}

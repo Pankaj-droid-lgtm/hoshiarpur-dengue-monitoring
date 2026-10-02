@@ -1,8 +1,255 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="page-heading"><div><p class="eyebrow">District monitoring</p><h2>DC / ADC operational dashboard</h2></div><div class="action-row"><a class="button secondary" href="{{ url_for('monitoring.deployment_csv') }}">Deployment Excel</a><a class="button secondary" href="{{ url_for('monitoring.visits_csv') }}">Visits Excel</a><a class="button secondary" href="{{ url_for('monitoring.historical_cases_csv') }}">Historical cases Excel</a><a class="button secondary" href="{{ url_for('monitoring.historical_vbd_csv') }}">VBD Excel</a><a class="button secondary" href="{{ url_for('monitoring.historical_field_responses_csv') }}">Field response Excel</a><a class="button secondary" href="{{ url_for('monitoring.high_risk_areas_csv') }}">High-risk Excel</a></div></div>
-<form class="filter-bar" method="get"><label>Date <input type="date" name="date" value="{{ selected_date.isoformat() }}"></label><label>Block <select name="block_id"><option value="">All blocks</option>{% for block in blocks %}<option value="{{ block.id }}" {% if filters.block_id == block.id %}selected{% endif %}>{{ block.name }}</option>{% endfor %}</select></label><label>Locality <select name="locality_id"><option value="">All localities</option>{% for locality in localities %}<option value="{{ locality.id }}" {% if filters.locality_id == locality.id %}selected{% endif %}>{{ locality.name }}</option>{% endfor %}</select></label><label>Worker <input name="worker" value="{{ filters.worker }}"></label><label>Status <select name="status"><option value="">All statuses</option>{% for item in ['assigned','started','in_progress','completed','overdue','cancelled'] %}<option value="{{ item }}" {% if filters.status == item %}selected{% endif %}>{{ item.replace('_',' ') }}</option>{% endfor %}</select></label><button type="submit">Apply</button></form>
-<section class="metric-grid">{% for label,value in [('Deployed workers',metrics.deployed),('Houses assigned',metrics.assigned),('Houses completed',metrics.completed),('Houses pending',metrics.pending),('Visits today',metrics.visits),('Larval-positive houses',metrics.positive),('Repeat-positive houses',metrics.repeat_positive),('Reinspection pending',metrics.reinspection),('Active deployments',metrics.active),('Overdue tasks',metrics.overdue)] %}<div class="metric"><span>{{ label }}</span><strong>{{ value }}</strong></div>{% endfor %}</section>
-<section class="panel"><h3>Historical departmental reporting</h3><form class="filter-bar" method="get"><label>Source <select name="historical_source_id"><option value="">All imported sources</option>{% for source in historical_sources %}<option value="{{ source.id }}" {% if filters.historical_source_id == source.id %}selected{% endif %}>{{ source.original_filename }}</option>{% endfor %}</select></label><label>Block <input name="historical_block" value="{{ filters.historical_block }}"></label><label>Rural/urban <select name="historical_area_type"><option value="">All</option>{% for item in ['Rural','Urban'] %}<option value="{{ item }}" {% if filters.historical_area_type == item %}selected{% endif %}>{{ item }}</option>{% endfor %}</select></label><button type="submit">Filter historical data</button></form><div class="metric-grid">{% for label,value in [('Historical cases',historical.cases),('Samples tested',historical.samples_tested),('Positive cases',historical.positive_cases),('Positivity rate',(historical.positivity_rate|string + '%') if historical.positivity_rate is not none else 'Not reported'),('Houses checked',historical.houses_checked),('Larval-positive houses',historical.houses_positive),('Containers checked',historical.containers_checked),('Larval-positive containers',historical.containers_positive),('Field response rows',historical.responses),('High-risk areas',historical.high_risk)] %}<div class="metric"><span>{{ label }}</span><strong>{{ value }}</strong></div>{% endfor %}</div></section>
-<section class="panel table-panel"><h3>Worker deployment status</h3><table><thead><tr><th>Worker</th><th>Block</th><th>Locality</th><th>Target</th><th>Completed</th><th>Pending</th><th>Status</th></tr></thead><tbody>{% for deployment in deployments %}{% set target=deployment.house_assignments|length %}{% set completed=deployment.house_assignments|selectattr('completed_at')|list|length %}<tr><td><a href="{{ url_for('deployments.detail', deployment_id=deployment.id) }}">{{ deployment.worker_name }}</a><br><a class="button secondary" href="{{ url_for('deployments.detail', deployment_id=deployment.id) }}">View details / Photos</a></td><td>{{ deployment.block.name }}</td><td>{{ deployment.locality.name if deployment.locality else 'All localities' }}</td><td>{{ target }}</td><td>{{ completed }}</td><td>{{ target-completed }}</td><td>{{ deployment.status }}</td></tr>{% else %}<tr><td colspan="7" class="empty-state">No operational deployments for this date.</td></tr>{% endfor %}</tbody></table></section>
+<div class="page-heading">
+  <div><p class="eyebrow">District monitoring</p><h2>ADC operational dashboard</h2></div>
+  <div class="action-row">
+    <a class="button secondary" href="{{ url_for('monitoring.deployment_csv') }}">Deployment Excel</a>
+    <a class="button secondary" href="{{ url_for('monitoring.visits_csv') }}">Visits Excel</a>
+    <a class="button secondary" href="{{ url_for('monitoring.historical_cases_csv') }}">Historical cases Excel</a>
+  </div>
+</div>
+
+<form class="filter-bar" method="get">
+  <label>Date <input type="date" name="date" value="{{ selected_date.isoformat() }}"></label>
+  <label>Block <select name="block_id"><option value="">All blocks</option>{% for block in blocks %}<option value="{{ block.id }}" {% if filters.block_id == block.id %}selected{% endif %}>{{ block.name }}</option>{% endfor %}</select></label>
+  <label>Locality <select name="locality_id"><option value="">All localities</option>{% for locality in localities %}<option value="{{ locality.id }}" {% if filters.locality_id == locality.id %}selected{% endif %}>{{ locality.name }}</option>{% endfor %}</select></label>
+  <button type="submit">Apply</button>
+</form>
+
+<section class="metric-grid">
+  {% for label,value in [
+    ('Active Breeding Checkers', metrics.active_checkers),
+    ('Today\'s deployed checkers', metrics.deployed_today),
+    ('Houses inspected today', metrics.houses_inspected_today),
+    ('Visits completed today', metrics.visits_completed_today),
+    ('Larva-positive houses today', metrics.larva_positive_today),
+    ('Areas covered today', metrics.areas_covered_today),
+    ('Reinspection pending', metrics.reinspection_pending),
+    ('Alert items', metrics.alert_items)
+  ] %}
+  <div class="metric"><span>{{ label }}</span><strong>{{ value }}</strong></div>
+  {% endfor %}
+</section>
+
+<section class="panel">
+  <h3>Field monitoring - Operational charts</h3>
+  <div class="two-column">
+    <div class="chart-container">
+      <h4>Field visits / inspections trend (last 30 days)</h4>
+      <canvas id="visitsTrendChart" height="200"></canvas>
+    </div>
+    <div class="chart-container">
+      <h4>Larva found vs Not found (last 30 days)</h4>
+      <canvas id="larvaChart" height="200"></canvas>
+    </div>
+  </div>
+  <div class="two-column">
+    <div class="chart-container">
+      <h4>Area/Block-wise coverage (last 30 days)</h4>
+      <canvas id="areaCoverageChart" height="200"></canvas>
+    </div>
+    <div class="chart-container">
+      <h4>Breeding checker activity (last 30 days)</h4>
+      <canvas id="checkerActivityChart" height="200"></canvas>
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <h3>Dengue status (Historical / Reference data)</h3>
+  <p class="form-note">HISTORICAL / REFERENCE DATA - Not live operational data</p>
+  <form class="filter-bar" method="get">
+    <label>Source <select name="historical_source_id"><option value="">All imported sources</option>{% for source in historical_sources %}<option value="{{ source.id }}" {% if filters.historical_source_id == source.id %}selected{% endif %}>{{ source.original_filename }}</option>{% endfor %}</select></label>
+    <label>Block <input name="historical_block" value="{{ filters.historical_block }}"></label>
+    <label>Rural/urban <select name="historical_area_type"><option value="">All</option>{% for item in ['Rural','Urban'] %}<option value="{{ item }}" {% if filters.historical_area_type == item %}selected{% endif %}>{{ item }}</option>{% endfor %}</select></label>
+    <button type="submit">Filter historical data</button>
+  </form>
+  <div class="metric-grid">
+    {% for label,value in [
+      ('Historical cases', historical.cases),
+      ('Samples tested', historical.samples_tested),
+      ('Positive cases', historical.positive_cases),
+      ('Positivity rate', (historical.positivity_rate|string + '%') if historical.positivity_rate is not none else 'Not reported')
+    ] %}
+    <div class="metric"><span>{{ label }}</span><strong>{{ value }}</strong></div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="panel table-panel">
+  <h3>Area drill-down</h3>
+  <table>
+    <thead><tr><th>Block / Urban Area</th><th>Locality</th><th>MPHW</th><th>Breeding Checkers</th><th>Houses inspected</th><th>Visits</th><th>Larva +ve</th><th>Drill</th></tr></thead>
+    <tbody>
+    {% for area in area_drilldown %}
+    <tr>
+      <td>{{ area.block }}</td>
+      <td>{{ area.locality }}</td>
+      <td>{{ area.mphw }}</td>
+      <td>{{ area.checker_count }}</td>
+      <td>{{ area.houses_inspected }}</td>
+      <td>{{ area.visits }}</td>
+      <td>{{ area.larva_positive }}</td>
+      <td><a class="button secondary" href="{{ url_for('monitoring.area_detail', block_id=area.block_id, locality_id=area.locality_id) }}">Drill</a></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="empty-state">No area data available.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <h3>Action / Alerts</h3>
+  <table>
+    <thead><tr><th>Type</th><th>Area</th><th>Detail</th><th>Due / Status</th></tr></thead>
+    <tbody>
+    {% for alert in alerts %}
+    <tr>
+      <td><span class="status {{ alert.type }}">{{ alert.type.replace('_', ' ') }}</span></td>
+      <td>{{ alert.area }}</td>
+      <td>{{ alert.detail }}</td>
+      <td>{{ alert.due }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="empty-state">No pending action items.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const colors = {
+    navy: '#123c66',
+    blue: '#1b5e8c',
+    light: '#edf3f7',
+    border: '#c8d5df',
+    danger: '#9b2c2c',
+    success: '#1e6b43',
+    warning: '#b7791f'
+  };
+
+  // Visits trend chart
+  if (document.getElementById('visitsTrendChart') && typeof chart_visits_labels !== 'undefined') {
+    new Chart(document.getElementById('visitsTrendChart'), {
+      type: 'line',
+      data: {
+        labels: chart_visits_labels,
+        datasets: [{
+          label: 'Visits',
+          data: chart_visits_data,
+          borderColor: colors.navy,
+          backgroundColor: colors.navy + '20',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 3
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { beginAtZero: true, grid: { color: '#e0e6eb' } },
+          x: { grid: { display: false } }
+        }
+      }
+    });
+  }
+
+  // Larva found vs not found - stacked bar
+  if (document.getElementById('larvaChart') && typeof chart_larva_pos_data !== 'undefined') {
+    new Chart(document.getElementById('larvaChart'), {
+      type: 'bar',
+      data: {
+        labels: chart_visits_labels,
+        datasets: [
+          {
+            label: 'Larva Found',
+            data: chart_larva_pos_data,
+            backgroundColor: colors.danger + '80',
+            borderColor: colors.danger,
+            borderWidth: 1
+          },
+          {
+            label: 'No Larva',
+            data: chart_larva_neg_data,
+            backgroundColor: colors.success + '80',
+            borderColor: colors.success,
+            borderWidth: 1
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: 'bottom' } },
+        scales: {
+          x: { stacked: true, grid: { display: false } },
+          y: { stacked: true, beginAtZero: true, grid: { color: '#e0e6eb' } }
+        }
+      }
+    });
+  }
+
+  // Area/Block coverage
+  if (document.getElementById('areaCoverageChart') && typeof chart_area_labels !== 'undefined') {
+    new Chart(document.getElementById('areaCoverageChart'), {
+      type: 'bar',
+      data: {
+        labels: chart_area_labels,
+        datasets: [{
+          label: 'Visits',
+          data: chart_area_data,
+          backgroundColor: colors.blue + '80',
+          borderColor: colors.blue,
+          borderWidth: 1,
+          borderRadius: 4
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { beginAtZero: true, grid: { color: '#e0e6eb' } },
+          y: { grid: { display: false } }
+        }
+      }
+    });
+  }
+
+  // Checker activity
+  if (document.getElementById('checkerActivityChart') && typeof chart_checker_labels !== 'undefined') {
+    new Chart(document.getElementById('checkerActivityChart'), {
+      type: 'bar',
+      data: {
+        labels: chart_checker_labels,
+        datasets: [{
+          label: 'Visits',
+          data: chart_checker_data,
+          backgroundColor: colors.navy + '80',
+          borderColor: colors.navy,
+          borderWidth: 1,
+          borderRadius: 4
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { beginAtZero: true, grid: { color: '#e0e6eb' } },
+          y: { grid: { display: false } }
+        }
+      }
+    });
+  }
+</script>
 {% endblock %}

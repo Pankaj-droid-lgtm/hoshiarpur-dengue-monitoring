@@ -34,7 +34,7 @@ def deployment_status(deployment: Deployment) -> str:
 
 
 def can_access_deployment(deployment: Deployment) -> bool:
-    if current_user.role in {"admin", "dc", "adc", "district_officer", "block_officer", "supervisor"}:
+    if current_user.role in {"admin", "adc", "district_officer", "block_officer", "supervisor"}:
         return True
     return (
         (current_user.worker is not None and deployment.worker_id == current_user.worker.id)
@@ -430,7 +430,7 @@ def is_approved_location(block: Block | None, locality: Locality | None) -> bool
 
 def can_access_house(house: House) -> bool:
     """Management roles may monitor all photos; workers are limited to their deployments."""
-    if current_user.role in {"admin", "dc", "adc", "district_officer", "block_officer", "supervisor"}:
+    if current_user.role in {"admin", "adc", "district_officer", "block_officer", "supervisor"}:
         return True
     return any(can_access_deployment(assignment.deployment) for assignment in house.assignments)
 
@@ -625,12 +625,6 @@ def optional_float(value: str | None) -> float | None:
         return float(value) if value else None
     except ValueError:
         return None
-
-
-def valid_coordinates(latitude: float | None, longitude: float | None) -> bool:
-    if latitude is None and longitude is None:
-        return True
-    return latitude is not None and longitude is not None and -90 <= latitude <= 90 and -180 <= longitude <= 180
 
 
 def next_house_code() -> str:

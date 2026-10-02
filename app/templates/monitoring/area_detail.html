@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">Drill-down detail</p><h2>{{ block.name }} - {{ locality.name }}</h2></div>
+</div>
+
+<div class="form-note">
+  Drill-down detail showing mapping from Block/Urban → Village/Ward/Locality → MPHW → Checker → House → Visit History.
+</div>
+
+<div class="two-column">
+  <div class="panel">
+    <h4>Mapped Assignment</h4>
+    <p><strong>Locality:</strong> {{ locality.name }}</p>
+    <p><strong>MPHW:</strong> {{ mpw_name }}</p>
+    {% if checker_data %}
+    <p><strong>Active Checkers:</strong> {{ checker_data|length }}</p>
+    <table class="table-subtext">
+      {% for checker in checker_data %}
+      <tr>
+        <td>{{ checker.checker_id }}</td>
+        <td>{{ checker.checker_name }}</td>
+        <td>{{ checker.mphw }}</td>
+        <td>{{ checker.houses|length }} houses</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p>No active checkers mapped to this locality.</p>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <h4>Assignment Reassignment</h4>
+    <p>Currently no reassignment interface implemented in this view.</p>
+    <p>To reassign, use the deployment management interface.</p>
+  </div>
+</div>
+
+<div class="panel">
+  <h4>Visit History by Checker</h4>
+  {% for checker in checker_data %}
+  <h5>{{ checker.checker_name }} ({{ checker.checker_id }}) - {{ checker.mphw }}</h5>
+  <table class="table-subtext">
+    <thead><tr><th>House</th><th>Address</th><th>Larva Status</th><th>Last Visit</th><th>Workers</th></tr></thead>
+    {% for house in checker.houses %}
+    <tr>
+      <td>{{ house.house_code }}</td>
+      <td>{{ house.address }}</td>
+      <td>{{ house.larva_status }}</td>
+      <td>{{ house.last_visit }}</td>
+      <td>{{ house.checker_name }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p>No visit history data available.</p>
+  {% endfor %}
+  </div>
+</div>
+
+{% endblock %}
