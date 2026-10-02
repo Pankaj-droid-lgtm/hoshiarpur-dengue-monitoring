@@ -15,8 +15,8 @@ environment from `/etc/hoshiarpur-dengue-monitoring.env`.
 
 - **Admin and operational management roles:** manage workers, accounts,
   geography, daily deployments, house assignments, and eligible reassignments.
-- **ADC:** monitoring-only access to dashboards, deployment progress, reports,
-  map, and historical monitoring. ADC cannot make operational changes.
+- **ADC:** monitoring-only access to the dashboard, deployment progress, reports,
+  and historical monitoring. ADC cannot make operational changes.
 - **Field worker:** access only to deployments linked to their own permanent
   worker record, assigned houses, their visits, and authorized visit photos.
 
@@ -31,13 +31,13 @@ environment from `/etc/hoshiarpur-dengue-monitoring.env`.
 4. Create a daily deployment by selecting an active permanent worker, date,
    block, and optional locality. Worker identity/account/contact/designation/
    supervisor values are retained as deployment snapshots.
-5. Search stable house ID or address and assign eligible existing houses.
+5. Search permanent House ID, House No., or mobile number and assign eligible existing houses.
 6. Reassign only pending houses to another active same-date deployment. Completed
    or visited houses are not reassigned.
 
 ### ADC
 
-Use **Monitoring**, **Deployment progress**, **Map**, and CSV reports for
+Use **Monitoring**, **Deployment progress**, and CSV reports for
 district-wide oversight. The ADC role has no worker, geography, import, or
 assignment write permission.
 
@@ -45,7 +45,7 @@ assignment write permission.
 
 The field worker signs in with the account linked to their Worker record and
 uses **My field work**. The worker sees only today's assigned block/locality and
-houses, records visits, optional valid GPS and photos, larval observations,
+houses, records visits, house and visit photos, larval observations,
 source reduction, larvicide, and remarks. When every assigned house is
 completed, the deployment becomes completed automatically.
 
@@ -66,7 +66,7 @@ using these headers and retain the approved original as the authority.
 `workers.csv`
 
 ```text
-official_worker_id,full_name,designation,phone_number,supervisor_official_worker_id,availability_status,requires_login
+official_worker_id,full_name,designation,phone_number,supervisor_official_worker_id,block_name,sub_centre_name,locality_name,availability_status,requires_login
 ```
 
 `blocks.csv`
@@ -78,18 +78,18 @@ block_name,is_urban
 `localities.csv`
 
 ```text
-block_name,locality_name,locality_type
+block_name,sub_centre_name,locality_name,locality_type
 ```
 
 `houses.csv`
 
 ```text
-house_code,block_name,locality_name,house_number,address,latitude,longitude,is_active
+house_code,block_name,sub_centre_name,locality_name,house_number,mobile_number,address,is_active
 ```
 
 Rules: IDs must be unique and stable; workers must be imported before their
 supervisor references; blocks before localities; localities before houses.
-Blank phone, GPS, supervisor, and login fields remain blank rather than being
+Blank phone, supervisor, and login fields remain blank rather than being
 invented. Passwords must never appear in CSV files. Validate duplicates,
 foreign keys, and data ownership in a staging copy before any production import.
 There is intentionally no automatic seed/import command for operational data.
@@ -151,7 +151,7 @@ flask --app wsgi:app import-historical --source-type block_reporting "/path/Hosh
 The import stores the source workbook checksum and skips a repeat of the same
 file. It creates historical source rows and normalized Block/Locality master
 names only where the workbook explicitly provides geography. It never creates
-houses, workers, accounts, deployments, visits, GPS records, or photos.
+houses, workers, accounts, deployments, visits, or photos.
 
 The high-risk area image should first be reviewed and transcribed into a CSV
 with exactly `area_type,block,locality,positive_case_count` headers. Retain the

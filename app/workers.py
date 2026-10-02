@@ -5,7 +5,7 @@ from flask import Blueprint, abort, flash, redirect, render_template, request, u
 from flask_login import current_user, login_required
 
 from .extensions import db
-from .models import Role, User, Worker
+from .models import Locality, Role, User, Worker
 from .security import validate_csrf
 from .services.audit import log_change
 from .services.permissions import can_access_worker, require_operational_management_access
@@ -63,6 +63,7 @@ def create_worker():
                 availability_status=request.form.get("availability_status", "available"),
                 requires_login=request.form.get("requires_login") == "on",
                 supervisor_id=selected_supervisor_id(),
+                assigned_locality_id=request.form.get("assigned_locality_id", type=int),
             )
             db.session.add(worker)
             db.session.flush()
@@ -70,7 +71,7 @@ def create_worker():
             db.session.commit()
             flash("Worker created. Create an account only when login access is required.", "success")
             return redirect(url_for("workers.worker_detail", worker_id=worker.id))
-    return render_template("workers/form.html", worker=None, supervisors=active_supervisors())
+    return render_template("workers/form.html", worker=None, supervisors=active_supervisors(), localities=Locality.query.order_by(Locality.name).all())
 
 
 @workers_bp.route("/<int:worker_id>/edit", methods=["GET", "POST"])
@@ -87,6 +88,7 @@ def edit_worker(worker_id: int):
         worker.availability_status = request.form.get("availability_status", "available")
         worker.requires_login = request.form.get("requires_login") == "on"
         worker.supervisor_id = selected_supervisor_id()
+        worker.assigned_locality_id = request.form.get("assigned_locality_id", type=int)
         if not worker.full_name or not worker.designation:
             flash("Name and designation are required.", "error")
         else:
@@ -94,7 +96,7 @@ def edit_worker(worker_id: int):
             db.session.commit()
             flash("Worker details updated.", "success")
             return redirect(url_for("workers.worker_detail", worker_id=worker.id))
-    return render_template("workers/form.html", worker=worker, supervisors=active_supervisors(exclude_id=worker.id))
+    return render_template("workers/form.html", worker=worker, supervisors=active_supervisors(exclude_id=worker.id), localities=Locality.query.order_by(Locality.name).all())
 
 
 @workers_bp.get("/<int:worker_id>")

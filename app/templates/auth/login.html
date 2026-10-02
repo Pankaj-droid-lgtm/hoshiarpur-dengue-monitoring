@@ -1,10 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Sign in{% endblock %}
+{% block title %}Sign in · Hoshiarpur Dengue Monitoring{% endblock %}
 {% block content %}
-<form method="post">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-  <label>Username <input name="username" autocomplete="username" required></label>
-  <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
-  <button type="submit">Sign in</button>
-</form>
+<section class="login-shell"><div class="login-copy"><p class="eyebrow">Government of Punjab · District Hoshiarpur</p><h1>Dengue field surveillance, connected.</h1><p>Securely coordinate house inspections, larval findings and follow-up action across the district.</p><ul><li>Structured field visits</li><li>Permanent household history</li><li>District-level monitoring</li></ul></div><form method="post" class="login-card"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><p class="eyebrow">Secure access</p><h2>Sign in</h2><p class="form-note">Use your authorised account credentials.</p><label>Username <input name="username" autocomplete="username" required autofocus></label><label>Password <input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Sign in securely</button></form></section>
 {% endblock %}

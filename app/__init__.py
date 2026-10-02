@@ -20,7 +20,7 @@ from .visits import visits_bp
 from .security import csrf_token
 from .services.historical_import import import_high_risk_reference, import_historical_workbook
 from .services.reference_geography import load_reference_geography
-from .services.migrations import migrate_field_house_schema
+from .services.migrations import migrate_field_house_schema, migrate_operational_refactor
 
 
 def create_app(config_object=Config) -> Flask:
@@ -154,6 +154,18 @@ def create_app(config_object=Config) -> Flask:
             raise click.ClickException("This migration supports only the configured SQLite database.")
         try:
             backup_path = migrate_field_house_schema(database_path)
+        except Exception as error:
+            raise click.ClickException(f"Migration failed: {error}") from error
+        click.echo(f"Migration complete. Backup created: {backup_path}")
+
+    @app.cli.command("migrate-operational-refactor")
+    def migrate_operational():
+        """Back up SQLite and add sub-centre, village and household-mobile fields."""
+        database_path = db.engine.url.database
+        if not database_path or db.engine.url.drivername != "sqlite":
+            raise click.ClickException("This migration supports only the configured SQLite database.")
+        try:
+            backup_path = migrate_operational_refactor(database_path)
         except Exception as error:
             raise click.ClickException(f"Migration failed: {error}") from error
         click.echo(f"Migration complete. Backup created: {backup_path}")

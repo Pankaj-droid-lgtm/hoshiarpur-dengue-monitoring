@@ -2,6 +2,6 @@
 {% block title %}Find existing house{% endblock %}
 {% block content %}
 <div class="page-heading"><div><p class="eyebrow">{{ deployment.team_name }}</p><h2>Find Existing House</h2><p>{{ deployment.block.name }} → {{ deployment.locality.name }}</p></div></div>
-<form class="panel filter-bar" method="get"><label>House No., household member, or House Code <input name="q" value="{{ query }}" required></label><button type="submit">Search</button></form>
+<form class="panel filter-bar" method="get"><label>House No., mobile number, or House Code <input name="q" value="{{ query }}" required></label><button type="submit">Search</button></form>
 {% if query %}<section class="panel">{% for house in houses %}<article class="assigned-house-card"><strong>{{ house.house_code }}</strong><span>House No. {{ house.house_number }} · {{ house.household_member_name }}</span><span>{{ house.address }}</span><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="house_id" value="{{ house.id }}"><input type="hidden" name="q" value="{{ query }}"><button type="submit">Open house / start visit</button></form></article>{% else %}<p class="empty-state">No existing house matches this assigned locality.</p>{% endfor %}</section>{% endif %}
 {% endblock %}

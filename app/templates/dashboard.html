@@ -1,18 +1,12 @@
 {% extends "base.html" %}
+{% block title %}Overview · Hoshiarpur Dengue Monitoring{% endblock %}
 {% block content %}
-<section class="panel">
-  <h2>Welcome, {{ current_user.username }}</h2>
-  {% if is_manager and current_user.role != 'adc' %}
-    <p>Worker management and daily deployment are ready for authorized operational data.</p>
-    <div class="action-row">
-      <a class="button" href="{{ url_for('workers.worker_list') }}">Manage workers</a>
-      <a class="button secondary" href="{{ url_for('deployments.dashboard') }}">View deployments</a>
-    </div>
-  {% elif current_user.role == 'adc' %}
-    <p>District-wide monitoring, reports, and the map are available from the monitoring menu.</p>
-    <div class="action-row"><a class="button secondary" href="{{ url_for('monitoring.dashboard') }}">Open monitoring dashboard</a></div>
-  {% else %}
-    <p>Your field work is available from the mobile view.</p>
-  {% endif %}
-</section>
+<section class="welcome-hero"><div><p class="eyebrow">Secure district surveillance workspace</p><h1>Welcome back, {{ current_user.username }}</h1><p>Use the relevant operational view below to keep field activities timely, traceable and actionable.</p></div><span class="role-badge">{{ current_user.role.replace('_', ' ') }}</span></section>
+{% if is_manager and current_user.role != 'adc' %}
+<section class="action-grid"><a class="action-card" href="{{ url_for('deployments.dashboard') }}"><span>01</span><h2>Field tasks</h2><p>Create, track and coordinate daily field deployments.</p><b>Open tasks →</b></a><a class="action-card" href="{{ url_for('workers.worker_list') }}"><span>02</span><h2>Worker directory</h2><p>Manage verified worker records and access.</p><b>View workers →</b></a><a class="action-card" href="{{ url_for('geography.index') }}"><span>03</span><h2>Operational geography</h2><p>Maintain blocks, villages and household records.</p><b>Manage geography →</b></a></section>
+{% elif current_user.role == 'adc' %}
+<section class="action-grid"><a class="action-card action-card-primary" href="{{ url_for('monitoring.dashboard') }}"><span>District view</span><h2>Monitoring dashboard</h2><p>Review surveillance performance, positive findings and pending actions.</p><b>Open monitoring →</b></a><a class="action-card" href="{{ url_for('deployments.dashboard') }}"><span>Operational view</span><h2>Deployment progress</h2><p>Review team workloads and completion across the district.</p><b>View progress →</b></a></section>
+{% else %}
+<section class="action-grid"><a class="action-card action-card-primary" href="{{ url_for('deployments.mobile') }}"><span>Today</span><h2>My field work</h2><p>Open assigned houses, record inspection findings and complete follow-ups.</p><b>Open my work →</b></a><a class="action-card" href="{{ url_for('deployments.mobile_visits') }}"><span>History</span><h2>My visits</h2><p>Review your recently recorded household inspections.</p><b>View visit history →</b></a></section>
+{% endif %}
 {% endblock %}
