@@ -21,7 +21,10 @@ from ..models import (
     HistoricalStaffingAllocation,
     Locality,
     SourceDocument,
+    User,
+    Worker,
 )
+from werkzeug.security import generate_password_hash
 
 
 @dataclass
@@ -50,7 +53,14 @@ def import_historical_workbook(filename: str, contents: bytes, source_type: str)
         if "dengue cases" in normalized_name:
             import_cases(workbook, source, summary)
         elif "breeding checkers" in normalized_name:
-            import_staffing(workbook, source, summary)
+            # Check if it's the compiled breeding checkers file by header
+            sheet = workbook["Sheet1"]
+            first_row = [text(cell) for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
+            expected_header = ["URBAN AREA", "Number of breeding checkers", "Name of MPHW (m)", "S.N.", "Name of breeding checkers", "MOBILE NUMBER"]
+            if first_row == expected_header:
+                import_breeding_checkers_workers(workbook, source, summary)
+            else:
+                import_staffing(workbook, source, summary)
         else:
             import_vbd_reporting(workbook, source, summary)
         return summary
@@ -148,6 +158,131 @@ def import_staffing(workbook, source: SourceDocument, summary: ImportSummary) ->
             if area:
                 resolve_block(area, source)
         summary.inserted += 1
+
+
+def import_breeding_checkers_workers(workbook, source: SourceDocument, summary: ImportSummary) -> None:
+    """Import breeding checkers as Worker and User records."""
+    sheet = workbook["Sheet1"]
+    # We'll keep track of the current block and MPHW name as we iterate rows
+    current_block_name = None
+    current_mphw_name = None
+    for row_number, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), 2):
+        # Skip empty rows
+        if not row or all(cell is None for cell in row):
+            continue
+        # Extract cells: A=block (maybe empty), B=urban area number (ignore), C=MPHW name (maybe empty), D=S.N., E=name, F=mobile
+        block_cell = row[0]
+        mphw_cell = row[2]
+        sn_cell = row[3]
+        name_cell = row[4]
+        mobile_cell = row[5]
+        # Update current block and MPHW if block cell is not empty
+        if block_cell is not None and str(block_cell).strip() != "":
+            current_block_name = str(block_cell).strip()
+            current_mphw_name = str(mphw_cell).strip() if mphw_cell is not None else None
+        # If we don't have a block yet, skip (should not happen after first row)
+        if current_block_name is None:
+            continue
+        # S.N. must be present
+        if sn_cell is None:
+            continue
+        try:
+            sn = int(sn_cell)
+        except (ValueError, TypeError):
+            continue
+        # Generate official_worker_id as W{sn:03d}
+        official_worker_id = f"W{sn:03d}"
+        # Name and mobile
+        full_name = text(name_cell)
+        phone_number = text(mobile_cell)
+        if not full_name:
+            summary.errors += 1
+            continue
+        # Check if Worker already exists
+        worker = Worker.query.filter_by(official_worker_id=official_worker_id).first()
+        worker_created = False
+        if worker is None:
+            worker = Worker(
+                official_worker_id=official_worker_id,
+                full_name=full_name,
+                designation="Breeding Checker",
+                phone_number=phone_number,
+                mphw_name=current_mphw_name,
+                requires_login=True,
+                is_active=True,
+                availability_status="available",
+            )
+            db.session.add(worker)
+            db.session.flush()
+            worker_created = True
+            summary.inserted += 1  # count as inserted worker
+        else:
+            # Update existing worker if needed (optional, but we can update fields to match source)
+            updated = False
+            if worker.full_name != full_name:
+                worker.full_name = full_name
+                updated = True
+            if worker.designation != "Breeding Checker":
+                worker.designation = "Breeding Checker"
+                updated = True
+            if worker.phone_number != phone_number:
+                worker.phone_number = phone_number
+                updated = True
+            if worker.mphw_name != current_mphw_name:
+                worker.mphw_name = current_mphw_name
+                updated = True
+            if not worker.requires_login:
+                worker.requires_login = True
+                updated = True
+            if not worker.is_active:
+                worker.is_active = True
+                updated = True
+            if worker.availability_status != "available":
+                worker.availability_status = "available"
+                updated = True
+            if updated:
+                summary.updated += 1
+        # Now handle the User account
+        user = User.query.filter_by(username=official_worker_id).first()
+        user_created = False
+        if user is None:
+            # Create new user with password hash of mobile number
+            password_hash = generate_password_hash(phone_number)
+            user = User(
+                username=official_worker_id,
+                password_hash=password_hash,
+                role="field_worker",
+                is_active=True,
+            )
+            db.session.add(user)
+            db.session.flush()
+            user_created = True
+            summary.inserted += 1  # count as inserted user
+        else:
+            # Update existing user if needed
+            updated = False
+            if user.role != "field_worker":
+                user.role = "field_worker"
+                updated = True
+            if not user.is_active:
+                user.is_active = True
+                updated = True
+            # Check if password needs update (if mobile changed)
+            # We do not store plaintext, so we cannot compare. We'll only update if the user's password is not set or we want to reset?
+            # For safety, we do not update password if user exists (to avoid breaking existing logins).
+            # However, the requirement says initial password = official mobile number.
+            # If the user already exists, we assume the password is already set correctly from a previous import.
+            # We'll not update password on existing user.
+            if updated:
+                summary.updated += 1
+        # Link worker and user (if both exist and not already linked)
+        if worker.user is None:
+            worker.user = user
+        if user.worker is None:
+            user.worker = worker
+        # If we created either worker or user, we already counted in summary.inserted above.
+        # If we updated, we counted in summary.updated.
+    # End of row loop
 
 
 def import_vbd_reporting(workbook, source: SourceDocument, summary: ImportSummary) -> None:

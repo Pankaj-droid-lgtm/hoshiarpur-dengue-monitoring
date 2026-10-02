@@ -59,6 +59,7 @@ class Worker(TimestampMixin, db.Model):
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), unique=True)
     supervisor_id: Mapped[int | None] = mapped_column(ForeignKey("workers.id"))
+    mphw_name: Mapped[str | None] = mapped_column(String(160))
 
     user: Mapped[User | None] = relationship(back_populates="worker")
     supervisor: Mapped[Worker | None] = relationship(
@@ -85,6 +86,7 @@ class Block(TimestampMixin, db.Model):
 
 class Locality(TimestampMixin, db.Model):
     __tablename__ = "localities"
+
     __table_args__ = (UniqueConstraint("block_id", "name", name="uq_locality_block_name"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -170,9 +172,10 @@ class Deployment(TimestampMixin, db.Model):
 
 class HouseAssignment(TimestampMixin, db.Model):
     __tablename__ = "house_assignments"
-    __table_args__ = (UniqueConstraint("deployment_id", "house_id", name="uq_deployment_house"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    __table_args__ = (UniqueConstraint("deployment_id", "house_id", name="uq_deployment_house"),)
+
     deployment_id: Mapped[int] = mapped_column(ForeignKey("deployments.id"), nullable=False)
     house_id: Mapped[int] = mapped_column(ForeignKey("houses.id"), nullable=False)
     priority: Mapped[str] = mapped_column(String(20), default="normal", nullable=False)
