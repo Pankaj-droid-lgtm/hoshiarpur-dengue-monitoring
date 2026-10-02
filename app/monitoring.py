@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from uuid import uuid4
 
-from flask import Blueprint, Response, render_template, request
+from flask import Blueprint, Response, jsonify, render_template, request
 from flask_login import login_required
 from openpyxl import Workbook
+from sqlalchemy import case, true
 
 from .extensions import db
 from .models import (
@@ -20,227 +21,185 @@ from .services.reference_geography import REFERENCE_GEOGRAPHY, area_type_for_blo
 
 
 monitoring_bp = Blueprint("monitoring", __name__, url_prefix="/monitoring")
+HIGH_POSITIVITY_THRESHOLD = 10
 
 
 @monitoring_bp.get("/")
 @login_required
 def dashboard():
     require_management_access()
-    selected_date = parse_date(request.args.get("date")) or date.today()
+    return render_template(
+        "monitoring/dashboard.html",
+        blocks=Block.query.order_by(Block.name).all(),
+        high_positivity_threshold=HIGH_POSITIVITY_THRESHOLD,
+    )
 
-    # Get filter parameters from request
+
+@monitoring_bp.get("/api/options")
+@login_required
+def filter_options():
+    require_management_access()
     block_id = request.args.get("block_id", type=int)
     locality_id = request.args.get("locality_id", type=int)
-    worker_query = request.args.get("worker", "").strip()
-    status = request.args.get("status", "").strip()
+    localities = Locality.query.filter(
+        Locality.block_id == block_id if block_id else true()
+    ).order_by(Locality.name).all()
+    workers = Worker.query.join(Deployment, Deployment.worker_id == Worker.id).filter(
+        Worker.is_active.is_(True),
+        Deployment.block_id == block_id if block_id else true(),
+        Deployment.locality_id == locality_id if locality_id else true(),
+    ).distinct().order_by(Worker.full_name).all()
+    return jsonify({
+        "localities": [{"id": item.id, "name": item.name} for item in localities],
+        "workers": [{"id": item.id, "name": item.full_name, "code": item.official_worker_id} for item in workers],
+    })
 
-    # Build drill-down data: block -> locality -> MPHW -> checker -> house -> visit history
-    area_drilldown = []
-    for block in Block.query.order_by(Block.name).all():
-        for locality in Locality.query.filter_by(block_id=block.id).order_by(Locality.name).all():
-            mpw_name = None
-            # Find the associated MPHW from assigned workers
-            checkers = Worker.query.filter_by(
-                mphw_name=locality.name,
-                is_active=True
-            ).all()
-            checker_count = len(checkers)
-            houses_inspected = sum(
-                1 for h in house.assignments
-                for v in house.visits
-                if v.visited_at.date() == selected_date.isoformat()
-            ) if checkers else 0
 
-            # Larva positive count
-            larva_positive = 0
-            if checkers:
-                for checker in checkers:
-                    for visit in checker.visits:
-                        if visit.visited_at.date() == selected_date.isoformat():
-                            larva_positive += max(0, visit.positive_containers)
-                            break
+@monitoring_bp.get("/api/summary")
+@login_required
+def summary_api():
+    require_management_access()
+    filters = dashboard_filters()
+    start_at = datetime.combine(filters["date_from"], datetime.min.time())
+    end_at = datetime.combine(filters["date_to"] + timedelta(days=1), datetime.min.time())
+    previous_start = start_at - (end_at - start_at)
+    previous_end = start_at
 
-            # Get active alerts
-            alerts = []
-            for checker in checkers:
-                for assignment in checker.deployments:
-                    if assignment.status not in {"completed", "cancelled"}:
-                        alerts.append({
-                            "type": "reinspection_pending",
-                            "area": checker.mphw_name or checker.official_worker_id,
-                            "detail": f"Reinspection due in 7 days for house with positive containers",
-                            "due": "7 days"
-                        })
+    def visit_query(from_at, to_at):
+        query = HouseVisit.query.join(House).join(Locality).join(Block).filter(
+            HouseVisit.visited_at >= from_at, HouseVisit.visited_at < to_at
+        )
+        if filters["block_id"]:
+            query = query.filter(Block.id == filters["block_id"])
+        if filters["locality_id"]:
+            query = query.filter(Locality.id == filters["locality_id"])
+        if filters["worker_id"]:
+            query = query.filter(HouseVisit.worker_id == filters["worker_id"])
+        if filters["larval_status"] == "positive":
+            query = query.filter(HouseVisit.positive_containers > 0)
+        elif filters["larval_status"] == "negative":
+            query = query.filter(HouseVisit.positive_containers == 0)
+        return query
 
-            area_drilldown.append({
-                "block_id": block.id,
-                "locality_id": locality.id,
-                "block": block.name,
-                "locality": locality.name,
-                "mphw": locality.name,
-                "checker_count": checker_count,
-                "houses_inspected": houses_inspected,
-                "larva_positive": larva_positive,
-                "alerts": alerts,
-            })
+    current_visits = visit_query(start_at, end_at)
+    previous_visits = visit_query(previous_start, previous_end)
+    positive_case = case((HouseVisit.positive_containers > 0, 1), else_=0)
+    visit_total = current_visits.with_entities(db.func.count(HouseVisit.id)).scalar() or 0
+    positive_total = current_visits.with_entities(db.func.coalesce(db.func.sum(positive_case), 0)).scalar() or 0
+    previous_total = previous_visits.with_entities(db.func.count(HouseVisit.id)).scalar() or 0
+    previous_positive = previous_visits.with_entities(db.func.coalesce(db.func.sum(positive_case), 0)).scalar() or 0
+    deployed = deployment_count(filters, filters["date_from"], filters["date_to"])
+    previous_deployed = deployment_count(filters, previous_start.date(), (previous_end - timedelta(days=1)).date())
+    pending, overdue, completed_reinspections = reinspection_counts(filters)
+    positivity = round(positive_total * 100 / visit_total, 1) if visit_total else 0
+    previous_positivity = round(previous_positive * 100 / previous_total, 1) if previous_total else 0
 
-    # Operational metrics from live data
-    deployments = Deployment.query.filter_by(deployment_date=selected_date).all()
-    assignment_ids = [assignment.id for deployment in deployments for assignment in deployment.house_assignments]
-    assigned = len(assignment_ids)
-    completed = sum(1 for deployment in deployments for assignment in deployment.house_assignments if assignment.completed_at)
+    day_rows = current_visits.with_entities(
+        db.func.date(HouseVisit.visited_at).label("day"), db.func.count(HouseVisit.id),
+        db.func.coalesce(db.func.sum(positive_case), 0),
+    ).group_by(db.func.date(HouseVisit.visited_at)).order_by(db.func.date(HouseVisit.visited_at)).all()
+    days = [(filters["date_from"] + timedelta(days=offset)).isoformat() for offset in range((filters["date_to"] - filters["date_from"]).days + 1)]
+    day_map = {str(row[0]): {"visits": row[1], "positive": row[2]} for row in day_rows}
 
-    # Visits today
-    visits = HouseVisit.query.filter(db.func.date(HouseVisit.visited_at) == selected_date.isoformat()).all()
-    visits_completed_today = len(visits)
-    positives = [visit for visit in visits if visit.positive_containers > 0]
-    larva_positive_today = len(positives)
+    block_rows = current_visits.with_entities(
+        Block.id, Block.name, db.func.count(HouseVisit.id), db.func.coalesce(db.func.sum(positive_case), 0),
+    ).group_by(Block.id, Block.name).order_by(db.func.count(HouseVisit.id).desc()).all()
+    locality_rows = current_visits.with_entities(
+        Block.id, Locality.id, Locality.name, db.func.count(HouseVisit.id), db.func.coalesce(db.func.sum(positive_case), 0),
+    ).group_by(Block.id, Locality.id, Locality.name).having(db.func.count(HouseVisit.id) > 0).order_by(
+        (db.func.sum(positive_case) * 100.0 / db.func.count(HouseVisit.id)).desc()
+    ).limit(10).all()
+    checker_rows = current_visits.outerjoin(Worker, Worker.id == HouseVisit.worker_id).with_entities(
+        HouseVisit.worker_id, db.func.coalesce(Worker.full_name, HouseVisit.worker_name_snapshot), db.func.count(HouseVisit.id),
+        db.func.coalesce(db.func.sum(positive_case), 0),
+    ).group_by(HouseVisit.worker_id, Worker.full_name, HouseVisit.worker_name_snapshot).all()
+    deployment_table = Deployment.query.join(Block).outerjoin(Locality).outerjoin(Worker, Worker.id == Deployment.worker_id).outerjoin(
+        HouseVisit, db.and_(HouseVisit.deployment_id == Deployment.id, HouseVisit.visited_at >= start_at, HouseVisit.visited_at < end_at)
+    ).outerjoin(ReinspectionTask, ReinspectionTask.origin_visit_id == HouseVisit.id).filter(
+        Deployment.deployment_date.between(filters["date_from"], filters["date_to"])
+    )
+    if filters["block_id"]:
+        deployment_table = deployment_table.filter(Deployment.block_id == filters["block_id"])
+    if filters["locality_id"]:
+        deployment_table = deployment_table.filter(Deployment.locality_id == filters["locality_id"])
+    if filters["worker_id"]:
+        deployment_table = deployment_table.filter(Deployment.worker_id == filters["worker_id"])
+    table_rows = deployment_table.with_entities(
+        Block.id, Block.name, Locality.id, Locality.name, Worker.id,
+        db.func.coalesce(Worker.full_name, Deployment.worker_name), Worker.mphw_name,
+        Deployment.status, db.func.count(db.func.distinct(HouseVisit.house_id)), db.func.count(db.func.distinct(HouseVisit.id)),
+        db.func.coalesce(db.func.sum(positive_case), 0), db.func.count(db.func.distinct(ReinspectionTask.id)), db.func.max(HouseVisit.visited_at),
+    ).group_by(Block.id, Block.name, Locality.id, Locality.name, Worker.id, Worker.full_name, Deployment.worker_name, Worker.mphw_name, Deployment.status).all()
+    high_alerts = [
+        {"block_id": row[0], "locality_id": row[1], "locality": row[2], "visits": row[3], "positivity": round(row[4] * 100 / row[3], 1)}
+        for row in locality_rows if row[4] * 100 / row[3] >= HIGH_POSITIVITY_THRESHOLD
+    ]
+    zero_checker_rows = Worker.query.join(Deployment, Deployment.worker_id == Worker.id).outerjoin(
+        HouseVisit, db.and_(HouseVisit.worker_id == Worker.id, HouseVisit.visited_at >= start_at, HouseVisit.visited_at < end_at)
+    ).filter(Worker.is_active.is_(True), Deployment.deployment_date.between(filters["date_from"], filters["date_to"])).filter(
+        Deployment.block_id == filters["block_id"] if filters["block_id"] else true(),
+        Deployment.locality_id == filters["locality_id"] if filters["locality_id"] else true(),
+        Worker.id == filters["worker_id"] if filters["worker_id"] else true(),
+    ).group_by(Worker.id, Worker.full_name, Worker.official_worker_id).having(db.func.count(HouseVisit.id) == 0).all()
 
-    # Area coverage
-    areas_covered_today = len(set(visit.house.locality_id for visit in visits))
+    return jsonify({
+        "filters": {**filters, "date_from": filters["date_from"].isoformat(), "date_to": filters["date_to"].isoformat()},
+        "kpis": {
+            "deployed": metric(deployed, previous_deployed), "houses": metric(visit_total, previous_total),
+            "visits": metric(visit_total, previous_total), "positive": metric(positive_total, previous_positive),
+            "positivity": metric(positivity, previous_positivity), "pending": metric(pending, 0), "overdue": metric(overdue, 0),
+        },
+        "charts": {
+            "trend": {"labels": days, "visits": [day_map.get(day, {}).get("visits", 0) for day in days], "positive": [day_map.get(day, {}).get("positive", 0) for day in days]},
+            "larva": {"positive": positive_total, "negative": max(visit_total - positive_total, 0)},
+            "area": [{"id": row[1] if filters["block_id"] else row[0], "label": row[2] if filters["block_id"] else row[1], "coverage": row[3] if filters["block_id"] else row[2], "positivity": round((row[4] if filters["block_id"] else row[3]) * 100 / (row[3] if filters["block_id"] else row[2]), 1) if (row[3] if filters["block_id"] else row[2]) else 0} for row in (locality_rows if filters["block_id"] else block_rows)],
+            "localities": [{"block_id": row[0], "id": row[1], "label": row[2], "positivity": round(row[4] * 100 / row[3], 1)} for row in locality_rows],
+            "reinspections": {"pending": pending, "completed": completed_reinspections, "overdue": overdue},
+            "checkers": [{"id": row[0], "label": row[1], "visits": row[2], "positive": row[3]} for row in sorted(checker_rows, key=lambda row: row[2], reverse=True)[:5] + sorted(checker_rows, key=lambda row: row[2])[:5]],
+        },
+        "alerts": {"threshold": HIGH_POSITIVITY_THRESHOLD, "high_positivity": high_alerts, "overdue": overdue, "positive_findings": positive_total, "zero_checkers": [{"id": row[0], "name": row[1], "code": row[2]} for row in zero_checker_rows]},
+        "table": [{"block_id": row[0], "block": row[1], "locality_id": row[2], "locality": row[3], "worker_id": row[4], "checker": row[5], "mphw": row[6] or "Not recorded", "status": row[7], "houses": row[8], "visits": row[9], "positive": row[10], "reinspections": row[11], "last_visit": row[12].strftime("%d/%m/%Y %H:%M") if row[12] else "No visit", "positivity": round(row[10] * 100 / row[9], 1) if row[9] else 0} for row in table_rows],
+    })
 
-    # Reinspection pending
-    reinspection_pending = ReinspectionTask.query.filter_by(status="open").count()
 
-    # Alert items - based on real data
-    alert_items = []
-    # Check for houses with recent positive that need reinspection
-    for visit in visits:
-        if visit.positive_containers > 0:
-            last_positive = HouseVisit.query.filter(
-                HouseVisit.house_id == visit.house_id,
-                HouseVisit.visited_at < visit.visited_at,
-                HouseVisit.positive_containers > 0
-            ).first()
-            if not last_positive:
-                alerts.append({
-                    "type": "larva_positive",
-                    "area": visit.house.locality.block.name if visit.house.locality else "Unknown",
-                    "detail": f"House {visit.house.house_code} has positive containers, requires reinspection",
-                    "due": "7 days"
-                })
-
-    active = sum(item.status not in {"completed", "cancelled"} for item in deployments)
-    overdue = sum(item.deployment_date < date.today() and item.status not in {"completed", "cancelled"} for item in deployments)
-
-    historical_source_id = request.args.get("historical_source_id", type=int)
-    historical_block = request.args.get("historical_block", "").strip()
-    historical_area_type = request.args.get("historical_area_type", "").strip()
-    historical_cases = HistoricalDengueCase.query
-    historical_reports = HistoricalBlockReport.query
-    if historical_source_id:
-        historical_cases = historical_cases.filter_by(source_document_id=historical_source_id)
-        historical_reports = historical_reports.filter_by(source_document_id=historical_source_id)
-    if historical_block:
-        pattern = f"%{historical_block}%"
-        historical_cases = historical_cases.filter(HistoricalDengueCase.block_raw.ilike(pattern))
-        historical_reports = historical_reports.filter(HistoricalBlockReport.block_raw.ilike(pattern))
-    if historical_area_type:
-        historical_cases = historical_cases.filter(HistoricalDengueCase.rural_urban_raw.ilike(historical_area_type))
-
-    report_metrics = aggregate_report_metrics(historical_reports.all())
-    historical = {
-        "cases": historical_cases.count(),
-        "reports": historical_reports.count(),
-        "responses": HistoricalFieldResponse.query.count(),
-        "high_risk": HistoricalHighRiskCluster.query.count(),
-        **report_metrics,
+def dashboard_filters():
+    return {
+        "date_from": parse_date(request.args.get("date_from")) or date.today(),
+        "date_to": parse_date(request.args.get("date_to")) or date.today(),
+        "block_id": request.args.get("block_id", type=int),
+        "locality_id": request.args.get("locality_id", type=int),
+        "worker_id": request.args.get("worker_id", type=int),
+        "larval_status": request.args.get("larval_status", "").strip(),
     }
 
-    # Area/drilldown data - using existing reference geography
-    area_drilldown_data = []
-    for block_name, area_type, locality_names in REFERENCE_GEOGRAPHY:
-        block = Block.query.filter_by(name=block_name).first()
-        if not block:
-            continue
-        for locality_name in locality_names:
-            locality = Locality.query.filter_by(block_id=block.id, name=locality_name).first()
-            if not locality:
-                continue
-            # Count active checkers with this locality
-            checkers = Worker.query.filter(
-                Worker.mphw_name == locality.name,
-                Worker.is_active == True
-            ).all()
-            houses = 0
-            larva_pos = 0
-            if checkers:
-                for checker in checkers:
-                    if checker.deployments:
-                        for h in checker.deployments[0].house_assignments:
-                            houses += 1
-                    for visit in checker.visits:
-                        if visit.visited_at and visit.visited_at.date() == selected_date.isoformat():
-                            larva_pos += max(0, visit.positive_containers)
 
-            area_drilldown_data.append({
-                "block_id": block.id,
-                "locality_id": locality.id,
-                "block": block.name,
-                "locality": locality.name,
-                "mphw": locality.name,
-                "checker_count": len(checkers),
-                "houses_inspected": 0,  # Will be filled from actual data
-                "larva_positive": larva_pos,
-                "alerts": [],
-            })
+def deployment_count(filters, start_date, end_date):
+    query = Deployment.query.filter(Deployment.deployment_date.between(start_date, end_date))
+    if filters["block_id"]:
+        query = query.filter(Deployment.block_id == filters["block_id"])
+    if filters["locality_id"]:
+        query = query.filter(Deployment.locality_id == filters["locality_id"])
+    if filters["worker_id"]:
+        query = query.filter(Deployment.worker_id == filters["worker_id"])
+    return query.with_entities(db.func.count(db.func.distinct(Deployment.worker_id))).scalar() or 0
 
-    # ---- Chart data for last 30 days ----
-    end_date = selected_date
-    start_date = end_date - timedelta(days=29)
-    visits_30d = HouseVisit.query.filter(
-        HouseVisit.visited_at >= start_date,
-        HouseVisit.visited_at <= end_date + timedelta(days=1)
-    ).all()
 
-    # Visits per day (last 30 days)
-    visits_by_date = defaultdict(int)
-    larva_by_date = defaultdict(lambda: {"positive": 0, "negative": 0})
-    for visit in visits_30d:
-        d = visit.visited_at.date()
-        visits_by_date[d.isoformat()] += 1
-        if visit.positive_containers > 0:
-            larva_by_date[d.isoformat()]["positive"] += 1
-        else:
-            larva_by_date[d.isoformat()]["negative"] += 1
+def reinspection_counts(filters):
+    query = ReinspectionTask.query.join(House).join(Locality).join(Block)
+    if filters["block_id"]:
+        query = query.filter(Block.id == filters["block_id"])
+    if filters["locality_id"]:
+        query = query.filter(Locality.id == filters["locality_id"])
+    if filters["worker_id"]:
+        query = query.join(HouseVisit, ReinspectionTask.origin_visit_id == HouseVisit.id).filter(HouseVisit.worker_id == filters["worker_id"])
+    pending = query.filter(ReinspectionTask.status == "open", ReinspectionTask.due_date >= date.today()).count()
+    overdue = query.filter(ReinspectionTask.status == "open", ReinspectionTask.due_date < date.today()).count()
+    completed = query.filter(ReinspectionTask.status != "open").count()
+    return pending, overdue, completed
 
-    date_labels = [(start_date + timedelta(days=i)).isoformat() for i in range(30)]
-    visits_series = [visits_by_date.get(d, 0) for d in date_labels]
-    larva_pos_series = [larva_by_date.get(d, {}).get("positive", 0) for d in date_labels]
-    larva_neg_series = [larva_by_date.get(d, {}).get("negative", 0) for d in date_labels]
 
-    # Area/Block coverage
-    area_visits = defaultdict(int)
-    for visit in visits_30d:
-        block_name = visit.house.locality.block.name if visit.house and visit.house.locality and visit.house.locality.block else "Unknown"
-        area_visits[block_name] += 1
-    area_labels = sorted(area_visits.keys())
-    area_series = [area_visits[name] for name in area_labels]
-
-    # Checker activity
-    checker_visits = defaultdict(int)
-    for visit in visits_30d:
-        checker_name = visit.worker_name_snapshot
-        checker_visits[checker_name] += 1
-    top_checkers = sorted(checker_visits.items(), key=lambda x: x[1], reverse=True)[:10]
-    checker_labels = [name for name, _ in top_checkers]
-    checker_series = [count for _, count in top_checkers]
-
-    return render_template("monitoring/dashboard.html", selected_date=selected_date,
-        deployments=deployments, blocks=Block.query.order_by(Block.name).all(),
-        localities=Locality.query.order_by(Locality.name).all(),
-        historical_sources=SourceDocument.query.order_by(SourceDocument.imported_at.desc()).all(),
-        historical=historical, filters={"block_id": block_id, "locality_id": locality_id,
-            "worker": worker_query, "status": status, "historical_source_id": historical_source_id,
-            "historical_block": historical_block, "historical_area_type": historical_area_type},
-        metrics={"deployed": len(deployments), "assigned": assigned, "completed": completed,
-            "pending": assigned-completed, "visits": visits_completed_today, "positive": larva_positive_today,
-            "reinspection": reinspection_pending, "active": active, "overdue": overdue,
-            "area_drilldown": area_drilldown_data, "alerts": alert_items},
-        chart_visits_labels=date_labels, chart_visits_data=visits_series,
-        chart_larva_pos_data=larva_pos_series, chart_larva_neg_data=larva_neg_series,
-        chart_area_labels=area_labels, chart_area_data=area_series,
-        chart_checker_labels=checker_labels, chart_checker_data=checker_series)
+def metric(value, previous):
+    return {"value": value or 0, "change": round((value or 0) - (previous or 0), 1)}
 
 
 @monitoring_bp.get("/area/<int:block_id>/<int:locality_id>")
