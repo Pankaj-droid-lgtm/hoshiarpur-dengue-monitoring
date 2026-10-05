@@ -60,6 +60,7 @@ class Worker(TimestampMixin, db.Model):
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), unique=True)
     supervisor_id: Mapped[int | None] = mapped_column(ForeignKey("workers.id"))
     mphw_name: Mapped[str | None] = mapped_column(String(160))
+    assigned_locality_id: Mapped[int | None] = mapped_column(ForeignKey("localities.id"))
 
     user: Mapped[User | None] = relationship(back_populates="worker")
     supervisor: Mapped[Worker | None] = relationship(
@@ -70,6 +71,9 @@ class Worker(TimestampMixin, db.Model):
         back_populates="worker", foreign_keys="Deployment.worker_id"
     )
     visits: Mapped[list[HouseVisit]] = relationship(back_populates="worker")
+    assigned_locality: Mapped[Locality | None] = relationship(
+        back_populates="assigned_workers", foreign_keys=[assigned_locality_id]
+    )
 
 
 class Block(TimestampMixin, db.Model):
@@ -80,8 +84,21 @@ class Block(TimestampMixin, db.Model):
     is_urban: Mapped[bool] = mapped_column(default=False, nullable=False)
 
     localities: Mapped[list[Locality]] = relationship(back_populates="block")
+    sub_centres: Mapped[list[SubCentre]] = relationship(back_populates="block")
     deployments: Mapped[list[Deployment]] = relationship(back_populates="block")
     aliases: Mapped[list[GeographyAlias]] = relationship(back_populates="block")
+
+
+class SubCentre(TimestampMixin, db.Model):
+    __tablename__ = "sub_centres"
+    __table_args__ = (UniqueConstraint("block_id", "name", name="uq_sub_centre_block_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    block_id: Mapped[int] = mapped_column(ForeignKey("blocks.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+
+    block: Mapped[Block] = relationship(back_populates="sub_centres")
+    localities: Mapped[list[Locality]] = relationship(back_populates="sub_centre")
 
 
 class Locality(TimestampMixin, db.Model):
@@ -91,10 +108,15 @@ class Locality(TimestampMixin, db.Model):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     block_id: Mapped[int] = mapped_column(ForeignKey("blocks.id"), nullable=False)
+    sub_centre_id: Mapped[int | None] = mapped_column(ForeignKey("sub_centres.id"))
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     locality_type: Mapped[str | None] = mapped_column(String(32))
 
     block: Mapped[Block] = relationship(back_populates="localities")
+    sub_centre: Mapped[SubCentre | None] = relationship(back_populates="localities")
+    assigned_workers: Mapped[list[Worker]] = relationship(
+        back_populates="assigned_locality", foreign_keys="Worker.assigned_locality_id"
+    )
     houses: Mapped[list[House]] = relationship(back_populates="locality")
     deployments: Mapped[list[Deployment]] = relationship(back_populates="locality")
     aliases: Mapped[list[GeographyAlias]] = relationship(back_populates="locality")
@@ -122,6 +144,7 @@ class House(TimestampMixin, db.Model):
     locality_id: Mapped[int] = mapped_column(ForeignKey("localities.id"), nullable=False)
     house_code: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
     house_number: Mapped[str | None] = mapped_column(String(80))
+    mobile_number: Mapped[str | None] = mapped_column(String(20))
     household_member_name: Mapped[str | None] = mapped_column(String(160))
     reference_photo_key: Mapped[str | None] = mapped_column(String(255), unique=True)
     reference_photo_content_type: Mapped[str | None] = mapped_column(String(100))
