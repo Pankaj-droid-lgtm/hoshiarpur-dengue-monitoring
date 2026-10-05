@@ -86,6 +86,29 @@ process. The linked credential template is deliberately non-secret.
 The unauthenticated health endpoint is `GET /health` and returns only
 `{"status":"ok"}`.
 
+## ADC monitoring dashboard deployment
+
+The ADC dashboard uses read-only, cached SQL aggregate endpoints and a local
+Chart.js 4.4.1 bundle at `app/static/js/chart.umd.min.js`. Keep that file
+committed so it is present after an EC2 `git pull`; it does not use a CDN.
+
+After deploying the dashboard update on EC2, run the idempotent index utility
+once, then restart Gunicorn:
+
+```sh
+git pull
+/home/ec2-user/hoshiarpur-dengue-monitoring/.venv/bin/python scripts/add_indexes.py
+sudo systemctl restart hoshiarpur-dengue-monitoring
+sudo systemctl status hoshiarpur-dengue-monitoring
+```
+
+The script enables SQLite WAL mode and reports each index as created or already
+existing. It does not alter tables or records. If the database is locked, it
+prints a retry message and exits without applying a partial change.
+
+Rollback: deploy the previous Git commit and restart Gunicorn. The added
+indexes are optional and safe to leave in place; no production data is changed.
+
 ## Uploads and historical imports
 
 Visit photos are private application data. Configure `DENGUE_UPLOAD_DIRECTORY`

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from io import BytesIO
+from time import monotonic
 from uuid import uuid4
 
 from flask import Blueprint, Response, jsonify, render_template, request
@@ -21,7 +22,13 @@ from .services.reference_geography import REFERENCE_GEOGRAPHY, area_type_for_blo
 
 
 monitoring_bp = Blueprint("monitoring", __name__, url_prefix="/monitoring")
-HIGH_POSITIVITY_THRESHOLD = 10
+DASHBOARD_CONFIG = {
+    "high_positivity_percent": 10,
+    "low_visits_today": 1,
+    "cache_seconds": 45,
+}
+HIGH_POSITIVITY_THRESHOLD = DASHBOARD_CONFIG["high_positivity_percent"]
+_dashboard_cache: dict[tuple[str, str], tuple[float, dict]] = {}
 
 
 @monitoring_bp.get("/")
@@ -41,14 +48,25 @@ def filter_options():
     require_management_access()
     block_id = request.args.get("block_id", type=int)
     locality_id = request.args.get("locality_id", type=int)
-    localities = Locality.query.filter(
+    area_type = request.args.get("area_type", "").strip().lower()
+    localities_query = Locality.query.join(Block).filter(
         Locality.block_id == block_id if block_id else true()
-    ).order_by(Locality.name).all()
-    workers = Worker.query.join(Deployment, Deployment.worker_id == Worker.id).filter(
+    )
+    if area_type == "rural":
+        localities_query = localities_query.filter(Block.is_urban.is_(False))
+    elif area_type == "urban":
+        localities_query = localities_query.filter(Block.is_urban.is_(True))
+    localities = localities_query.order_by(Locality.name).all()
+    workers_query = Worker.query.join(Deployment, Deployment.worker_id == Worker.id).join(Block, Deployment.block_id == Block.id).filter(
         Worker.is_active.is_(True),
         Deployment.block_id == block_id if block_id else true(),
         Deployment.locality_id == locality_id if locality_id else true(),
-    ).distinct().order_by(Worker.full_name).all()
+    )
+    if area_type == "rural":
+        workers_query = workers_query.filter(Block.is_urban.is_(False))
+    elif area_type == "urban":
+        workers_query = workers_query.filter(Block.is_urban.is_(True))
+    workers = workers_query.distinct().order_by(Worker.full_name).all()
     return jsonify({
         "localities": [{"id": item.id, "name": item.name} for item in localities],
         "workers": [{"id": item.id, "name": item.full_name, "code": item.official_worker_id} for item in workers],
@@ -200,6 +218,180 @@ def reinspection_counts(filters):
 
 def metric(value, previous):
     return {"value": value or 0, "change": round((value or 0) - (previous or 0), 1)}
+
+
+def cached_dashboard_json(widget: str, builder):
+    """Keep repeated dashboard aggregate requests inexpensive per Gunicorn worker."""
+    key = (widget, request.query_string.decode("utf-8"))
+    now = monotonic()
+    cached = _dashboard_cache.get(key)
+    if cached and cached[0] > now:
+        return jsonify(cached[1])
+    payload = builder()
+    _dashboard_cache[key] = (now + DASHBOARD_CONFIG["cache_seconds"], payload)
+    return jsonify(payload)
+
+
+def monitoring_filters() -> dict:
+    date_from = parse_date(request.args.get("date_from")) or date.today()
+    date_to = parse_date(request.args.get("date_to")) or date.today()
+    if date_to < date_from:
+        date_from, date_to = date_to, date_from
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "block_id": request.args.get("block_id", type=int),
+        "locality_id": request.args.get("locality_id", type=int),
+        "worker_id": request.args.get("worker_id", type=int),
+        "area_type": request.args.get("area_type", "").strip().lower(),
+    }
+
+
+def filtered_visits(filters: dict, start_at=None, end_at=None):
+    start_at = start_at or datetime.combine(filters["date_from"], datetime.min.time())
+    end_at = end_at or datetime.combine(filters["date_to"] + timedelta(days=1), datetime.min.time())
+    query = HouseVisit.query.join(House).join(Locality).join(Block).filter(
+        HouseVisit.visited_at >= start_at, HouseVisit.visited_at < end_at
+    )
+    if filters["block_id"]:
+        query = query.filter(Block.id == filters["block_id"])
+    if filters["locality_id"]:
+        query = query.filter(Locality.id == filters["locality_id"])
+    if filters["worker_id"]:
+        query = query.filter(HouseVisit.worker_id == filters["worker_id"])
+    if filters["area_type"] == "rural":
+        query = query.filter(Block.is_urban.is_(False))
+    elif filters["area_type"] == "urban":
+        query = query.filter(Block.is_urban.is_(True))
+    return query
+
+
+def filtered_reinspections(filters: dict):
+    query = ReinspectionTask.query.join(House).join(Locality).join(Block)
+    if filters["block_id"]:
+        query = query.filter(Block.id == filters["block_id"])
+    if filters["locality_id"]:
+        query = query.filter(Locality.id == filters["locality_id"])
+    if filters["worker_id"]:
+        query = query.join(HouseVisit, ReinspectionTask.origin_visit_id == HouseVisit.id).filter(HouseVisit.worker_id == filters["worker_id"])
+    if filters["area_type"] == "rural":
+        query = query.filter(Block.is_urban.is_(False))
+    elif filters["area_type"] == "urban":
+        query = query.filter(Block.is_urban.is_(True))
+    return query
+
+
+@monitoring_bp.get("/api/kpis")
+@login_required
+def kpis_api():
+    require_management_access()
+    return cached_dashboard_json("kpis", lambda: kpi_payload(monitoring_filters()))
+
+
+def kpi_payload(filters: dict) -> dict:
+    positive = case((HouseVisit.positive_containers > 0, 1), else_=0)
+    totals = filtered_visits(filters).with_entities(
+        db.func.count(HouseVisit.id), db.func.coalesce(db.func.sum(positive), 0)
+    ).one()
+    reinspections = filtered_reinspections(filters).with_entities(
+        db.func.coalesce(db.func.sum(case((ReinspectionTask.status == "open", 1), else_=0)), 0),
+        db.func.coalesce(db.func.sum(case((db.and_(ReinspectionTask.status == "open", ReinspectionTask.due_date < date.today()), 1), else_=0)), 0),
+    ).one()
+    today_filters = {**filters, "date_from": date.today(), "date_to": date.today()}
+    active = filtered_visits(today_filters).with_entities(db.func.count(db.func.distinct(HouseVisit.worker_id))).scalar() or 0
+    visits, positives = int(totals[0] or 0), int(totals[1] or 0)
+    return {"total_visits": visits, "larva_positive": positives, "positivity_percent": round(positives * 100 / visits, 1) if visits else 0, "pending_reinspections": int(reinspections[0] or 0), "overdue_reinspections": int(reinspections[1] or 0), "active_checkers_today": active}
+
+
+@monitoring_bp.get("/api/trends")
+@login_required
+def trends_api():
+    require_management_access()
+    return cached_dashboard_json("trends", lambda: trends_payload(monitoring_filters()))
+
+
+def trends_payload(filters: dict) -> dict:
+    positive = case((HouseVisit.positive_containers > 0, 1), else_=0)
+    rows = filtered_visits(filters).with_entities(
+        db.func.date(HouseVisit.visited_at), db.func.count(HouseVisit.id), db.func.coalesce(db.func.sum(positive), 0)
+    ).group_by(db.func.date(HouseVisit.visited_at)).order_by(db.func.date(HouseVisit.visited_at)).all()
+    values = {str(row[0]): (int(row[1]), int(row[2])) for row in rows}
+    days = [(filters["date_from"] + timedelta(days=offset)).isoformat() for offset in range((filters["date_to"] - filters["date_from"]).days + 1)]
+    visits = [values.get(day, (0, 0))[0] for day in days]
+    positives = [values.get(day, (0, 0))[1] for day in days]
+    return {"labels": days, "visits": visits, "positive": positives, "negative": [visit - positive for visit, positive in zip(visits, positives)]}
+
+
+@monitoring_bp.get("/api/performance")
+@login_required
+def performance_api():
+    require_management_access()
+    return cached_dashboard_json("performance", lambda: performance_payload(monitoring_filters()))
+
+
+def performance_payload(filters: dict) -> dict:
+    positive = case((HouseVisit.positive_containers > 0, 1), else_=0)
+    query = filtered_visits(filters)
+    def rows_for(*columns):
+        return query.with_entities(*columns, db.func.count(HouseVisit.id), db.func.coalesce(db.func.sum(positive), 0)).group_by(*columns).order_by(db.func.count(HouseVisit.id).desc()).limit(15).all()
+    blocks = rows_for(Block.id, Block.name)
+    localities = rows_for(Locality.id, Locality.name)
+    mphw_name = db.func.coalesce(db.func.nullif(Worker.mphw_name, ""), "Unassigned")
+    mphw = query.outerjoin(Worker, Worker.id == HouseVisit.worker_id).with_entities(mphw_name, db.func.count(HouseVisit.id), db.func.coalesce(db.func.sum(positive), 0)).group_by(mphw_name).order_by(db.func.count(HouseVisit.id).desc()).limit(15).all()
+    checker_name = db.func.coalesce(Worker.full_name, HouseVisit.worker_name_snapshot)
+    checkers = query.outerjoin(Worker, Worker.id == HouseVisit.worker_id).with_entities(HouseVisit.worker_id, checker_name, db.func.count(HouseVisit.id), db.func.coalesce(db.func.sum(positive), 0)).group_by(HouseVisit.worker_id, checker_name).order_by(db.func.count(HouseVisit.id).desc()).limit(15).all()
+    def format_rows(rows, id_index=0, label_index=1, count_index=2, positive_index=3):
+        return [{"id": row[id_index], "label": row[label_index], "visits": int(row[count_index]), "positive": int(row[positive_index]), "positivity": round(row[positive_index] * 100 / row[count_index], 1) if row[count_index] else 0} for row in rows]
+    return {"blocks": format_rows(blocks), "localities": format_rows(localities), "mphw": [{"label": row[0], "visits": int(row[1]), "positive": int(row[2]), "positivity": round(row[2] * 100 / row[1], 1) if row[1] else 0} for row in mphw], "checkers": format_rows(checkers)}
+
+
+@monitoring_bp.get("/api/alerts")
+@login_required
+def alerts_api():
+    require_management_access()
+    return cached_dashboard_json("alerts", lambda: alerts_payload(monitoring_filters()))
+
+
+def alerts_payload(filters: dict) -> dict:
+    positive = case((HouseVisit.positive_containers > 0, 1), else_=0)
+    localities = filtered_visits(filters).with_entities(
+        Block.id, Locality.id, Locality.name, db.func.count(HouseVisit.id), db.func.coalesce(db.func.sum(positive), 0)
+    ).group_by(Block.id, Locality.id, Locality.name).having(
+        db.func.sum(positive) * 100.0 / db.func.count(HouseVisit.id) >= DASHBOARD_CONFIG["high_positivity_percent"]
+    ).order_by(db.func.sum(positive).desc()).limit(15).all()
+    today = date.today()
+    worker_query = Worker.query.join(Deployment, Deployment.worker_id == Worker.id).outerjoin(
+        HouseVisit, db.and_(HouseVisit.worker_id == Worker.id, db.func.date(HouseVisit.visited_at) == today.isoformat())
+    ).join(Block, Deployment.block_id == Block.id).filter(Worker.is_active.is_(True), Deployment.deployment_date == today)
+    if filters["block_id"]: worker_query = worker_query.filter(Deployment.block_id == filters["block_id"])
+    if filters["locality_id"]: worker_query = worker_query.filter(Deployment.locality_id == filters["locality_id"])
+    if filters["worker_id"]: worker_query = worker_query.filter(Worker.id == filters["worker_id"])
+    if filters["area_type"] == "rural": worker_query = worker_query.filter(Block.is_urban.is_(False))
+    elif filters["area_type"] == "urban": worker_query = worker_query.filter(Block.is_urban.is_(True))
+    low_workers = worker_query.with_entities(Worker.id, Worker.official_worker_id, Worker.full_name, db.func.count(HouseVisit.id)).group_by(Worker.id, Worker.official_worker_id, Worker.full_name).having(db.func.count(HouseVisit.id) <= DASHBOARD_CONFIG["low_visits_today"]).all()
+    overdue = filtered_reinspections(filters).filter(ReinspectionTask.status == "open", ReinspectionTask.due_date < today).count()
+    return {"threshold": DASHBOARD_CONFIG["high_positivity_percent"], "overdue_reinspections": overdue, "high_positivity_localities": [{"block_id": row[0], "locality_id": row[1], "locality": row[2], "visits": int(row[3]), "positivity": round(row[4] * 100 / row[3], 1)} for row in localities], "low_visit_checkers": [{"id": row[0], "code": row[1], "name": row[2], "visits": int(row[3])} for row in low_workers]}
+
+
+@monitoring_bp.get("/api/drilldown")
+@login_required
+def drilldown_api():
+    require_management_access()
+    return cached_dashboard_json("drilldown", lambda: drilldown_payload(monitoring_filters()))
+
+
+def drilldown_payload(filters: dict) -> dict:
+    positive = case((HouseVisit.positive_containers > 0, 1), else_=0)
+    start_at = datetime.combine(filters["date_from"], datetime.min.time())
+    end_at = datetime.combine(filters["date_to"] + timedelta(days=1), datetime.min.time())
+    query = Deployment.query.join(Block).outerjoin(Locality).outerjoin(Worker, Worker.id == Deployment.worker_id).outerjoin(HouseVisit, db.and_(HouseVisit.deployment_id == Deployment.id, HouseVisit.visited_at >= start_at, HouseVisit.visited_at < end_at)).filter(Deployment.deployment_date.between(filters["date_from"], filters["date_to"]))
+    if filters["block_id"]: query = query.filter(Deployment.block_id == filters["block_id"])
+    if filters["locality_id"]: query = query.filter(Deployment.locality_id == filters["locality_id"])
+    if filters["worker_id"]: query = query.filter(Deployment.worker_id == filters["worker_id"])
+    if filters["area_type"] == "rural": query = query.filter(Block.is_urban.is_(False))
+    elif filters["area_type"] == "urban": query = query.filter(Block.is_urban.is_(True))
+    rows = query.with_entities(Block.id, Block.name, Locality.id, Locality.name, Worker.id, db.func.coalesce(Worker.full_name, Deployment.worker_name), Worker.mphw_name, Deployment.status, db.func.count(db.func.distinct(HouseVisit.house_id)), db.func.count(db.func.distinct(HouseVisit.id)), db.func.coalesce(db.func.sum(positive), 0), db.func.max(HouseVisit.visited_at)).group_by(Block.id, Block.name, Locality.id, Locality.name, Worker.id, Worker.full_name, Deployment.worker_name, Worker.mphw_name, Deployment.status).all()
+    return {"rows": [{"block_id": row[0], "block": row[1], "locality_id": row[2], "locality": row[3] or "Not recorded", "worker_id": row[4], "checker": row[5], "mphw": row[6] or "Unassigned", "status": row[7], "houses": int(row[8]), "visits": int(row[9]), "positive": int(row[10]), "last_visit": row[11].strftime("%d/%m/%Y %H:%M") if row[11] else "No visit"} for row in rows]}
 
 
 @monitoring_bp.get("/area/<int:block_id>/<int:locality_id>")
