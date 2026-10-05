@@ -1,34 +1,3 @@
 {% extends "base.html" %}
-{% block content %}
-<div class="page-heading">
-  <div><p class="eyebrow">House surveillance</p><h2>House surveillance dashboard</h2></div>
-</div>
-
-<div class="form-note">
-  House surveillance dashboard showing inspection status. No GPS/geolocation data is captured or displayed.
-</div>
-
-<table>
-  <thead>
-    <tr>
-      <th>House Code</th>
-      <th>Locality</th>
-      <th>Status</th>
-      <th>Last visit</th>
-    </tr>
-  </thead>
-  <tbody>
-  {% for marker in markers %}
-  <tr>
-    <td>{{ marker.house_code }}</td>
-    <td>{{ marker.locality }}</td>
-    <td><span class="status {{ marker.status }}">{{ marker.status }}</span></td>
-    <td>{{ marker.last_visit }}</td>
-  </tr>
-  {% endfor %}
-  {% else %}
-  <tr><td colspan="4" class="empty-state">No houses with recorded data.</td></tr>
-  {% endif %}
-  </tbody>
-</table>
-{% endblock %}
+{% block title %}House surveillance · Hoshiarpur Dengue Monitoring{% endblock %}
+{% block content %}<div class="page-heading"><div><p class="eyebrow">House surveillance</p><h2>Inspection status register</h2><p class="form-note">A list-based surveillance view. GPS and geolocation are not captured or displayed.</p></div><a class="button secondary" href="{{ url_for('monitoring.dashboard') }}">Back to monitoring</a></div><section class="panel table-panel"><table><thead><tr><th>Permanent house ID</th><th>Locality</th><th>Latest status</th><th>Last visit</th></tr></thead><tbody>{% for marker in markers %}<tr><td><strong>{{ marker.house_code }}</strong></td><td>{{ marker.locality }}</td><td><span class="status {{ marker.status }}">{{ marker.status }}</span></td><td>{{ marker.last_visit }}</td></tr>{% else %}<tr><td colspan="4" class="empty-state">No houses with recorded surveillance data.</td></tr>{% endfor %}</tbody></table></section>{% endblock %}
